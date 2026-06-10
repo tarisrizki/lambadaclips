@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Open Source](https://badges.frapsoft.com/os/v1/open-source.svg?v=103)](https://opensource.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
-[![GitHub stars](https://img.shields.io/github/stars/lambadaclips/lambadaclips?style=social)](https://github.com/lambadaclips/lambadaclips)
+[![GitHub stars](https://img.shields.io/github/stars/tarisrizki/lambadaclips?style=social)](https://github.com/tarisrizki/lambadaclips)
 
 Selamat datang di **LambadaClips** — platform video AI *all-in-one* yang bikin proses ngonten kamu jadi super cepat dan otomatis! Nggak perlu lagi sewa editor mahal atau bayar langganan bulanan. LambadaClips bisa kamu jalankan sendiri (*self-hosted*), **100% tanpa watermark dan tanpa batasan**.
 
@@ -43,11 +43,11 @@ Jika dibandingkan dengan aplikasi berbayar lain (seperti Opus Clip atau Kapwing 
 
 ## 🛠️ Cara Install & Pakai
 
-Syarat utama: Komputer/Server kamu harus sudah ter-install **Docker** dan **Docker Compose**.
+Syarat utama: Komputer/Server kamu harus sudah ter-install **Docker** dan **Docker Compose**, atau gunakan **GitHub Codespaces**.
 
 **Langkah 1: Download Source Code**
 ```bash
-git clone https://github.com/lambadaclips/lambadaclips.git
+git clone https://github.com/tarisrizki/lambadaclips.git
 cd lambadaclips
 ```
 
@@ -57,13 +57,24 @@ Kamu bisa menyalin file contoh konfigurasi jika butuh integrasi AWS S3.
 cp .env.example .env
 ```
 
-**Langkah 3: Jalankan Aplikasi**
+**Langkah 3: Jalankan Mesin Backend (Docker)**
+Buka terminal dan ketik perintah berikut untuk menyalakan API & Mesin Render:
 ```bash
-docker compose up --build
+mkdir -p output/thumbnails
+sudo chmod -R 777 output
+docker compose up -d
 ```
 
-**Langkah 4: Buka di Browser**
-Buka **`http://localhost:5175`** di browser kesayanganmu.
+**Langkah 4: Jalankan Dashboard Frontend**
+Buka terminal baru, lalu jalankan server dashboard:
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+**Langkah 5: Buka di Browser**
+Buka **`http://localhost:5173`** di browser kesayanganmu.
 1. Masuk ke menu **Settings** dan masukkan API Key kamu (Gemini, fal.ai, ElevenLabs, dll).
 2. Langsung mulai *upload* video panjangmu atau bikin video UGC AI dalam hitungan menit!
 
