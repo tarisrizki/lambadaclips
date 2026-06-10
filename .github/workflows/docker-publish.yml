@@ -26,7 +26,7 @@ jobs:
             context: .
             dockerfile: ./Dockerfile
           - image: renderer
-            context: ./render-service
+            context: .
             dockerfile: ./render-service/Dockerfile
           - image: f5tts
             context: ./f5tts_server
