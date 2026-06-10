@@ -68,5 +68,6 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           provenance: false
+          no-cache: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
