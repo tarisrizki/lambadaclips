@@ -34,7 +34,7 @@ function saveCache(url, analysis, webResearch, scripts) {
   } catch { /* localStorage full */ }
 }
 
-export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uploadPostKey, uploadUserId }) {
+export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, uploadPostKey, uploadUserId, f5TtsUrl, f5TtsRefText, f5TtsRefAudio }) {
   // Wizard state
   const [step, setStep] = useState(() => {
     const cache = loadCache();
@@ -111,18 +111,18 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
 
   // Fetch voices on mount
   useEffect(() => {
-    if (elevenLabsKey) {
+    if (fishAudioKey) {
       fetchVoices();
     }
-  }, [elevenLabsKey]);
+  }, [fishAudioKey]);
 
   // Reset selected voice when actor gender changes
   useEffect(() => {
     const genderDefaults = {
       'en-female': '21m00Tcm4TlvDq8ikWAM',  // Rachel
       'en-male': '29vD33N1CtxCmqQRPOHJ',    // Drew
-      'es-female': 'EXAVITQu4vr4xnSDxMaL',  // Bella
-      'es-male': 'ErXwobaYiN019PkySvjV',     // Antoni
+      'id-female': 'EXAVITQu4vr4xnSDxMaL',  // Bella
+      'id-male': 'ErXwobaYiN019PkySvjV',     // Antoni
     };
     // If we have fetched voices, pick the first matching one; otherwise use hardcoded default
     const matchingVoice = voices.find(v => (v.labels?.gender || '').toLowerCase() === actorGender);
@@ -173,7 +173,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
   const fetchVoices = async () => {
     try {
       const res = await fetch(getApiUrl('/api/saasshorts/voices'), {
-        headers: { 'X-ElevenLabs-Key': elevenLabsKey },
+        headers: { 'X-FishAudio-Key': fishAudioKey },
       });
       if (res.ok) {
         const data = await res.json();
@@ -254,8 +254,8 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
       alert('fal.ai API key required. Set it in Settings.');
       return;
     }
-    if (!elevenLabsKey) {
-      alert('ElevenLabs API key required. Set it in Settings.');
+    if (!fishAudioKey) {
+      alert('Fish Audio API key required. Set it in Settings.');
       return;
     }
 
@@ -279,7 +279,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
         headers: {
           'Content-Type': 'application/json',
           'X-Fal-Key': falKey,
-          'X-ElevenLabs-Key': elevenLabsKey,
+          'X-FishAudio-Key': fishAudioKey,
         },
         body: JSON.stringify({
           script: scriptToSend,
@@ -287,6 +287,9 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
           actor_description: actorDescription || undefined,
           selected_actor_url: selectedActor || undefined,
           video_mode: videoMode,
+          f5tts_url: f5TtsUrl || undefined,
+          f5tts_ref_text: f5TtsRefText || undefined,
+          f5tts_ref_audio: f5TtsRefAudio || undefined,
         }),
       });
 
@@ -325,7 +328,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
         headers: {
           'Content-Type': 'application/json',
           'X-Fal-Key': falKey,
-          'X-ElevenLabs-Key': elevenLabsKey,
+          'X-FishAudio-Key': fishAudioKey,
         },
         body: JSON.stringify({
           script: scriptToSend,
@@ -333,6 +336,9 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
           actor_description: actorDescription || undefined,
           retry_job_id: jobId,
           video_mode: videoMode,
+          f5tts_url: f5TtsUrl || undefined,
+          f5tts_ref_text: f5TtsRefText || undefined,
+          f5tts_ref_audio: f5TtsRefAudio || undefined,
         }),
       });
 
@@ -391,7 +397,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
               AI Shorts
             </h1>
             <p className="text-sm text-zinc-500 mt-1">
-              Generate viral UGC videos for any product or business
+              Generate video UGC viral untuk produk atau bisnismu
             </p>
           </div>
           {step > 0 && (
@@ -430,7 +436,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
             <div className="glass-panel p-8 space-y-6">
               {/* Video Mode Selector */}
               <div>
-                <label className="block text-sm font-medium text-zinc-300 mb-3">Video Mode</label>
+                <label className="block text-sm font-medium text-zinc-300 mb-3">Mode Video</label>
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     onClick={() => setVideoMode('lowcost')}
@@ -444,7 +450,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                       <span className={`text-sm font-semibold ${videoMode === 'lowcost' ? 'text-green-300' : 'text-zinc-300'}`}>Low Cost</span>
                       <span className="text-xs font-mono text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full">~$0.80</span>
                     </div>
-                    <p className="text-[11px] text-zinc-500 leading-relaxed">Hailuo 2.3 img2video + VEED Lipsync. Good movement + lip-sync. Recommended.</p>
+                    <p className="text-[11px] text-zinc-500 leading-relaxed">Hailuo 2.3 img2video + VEED Lipsync. Movement bagus + lip-sync. Direkomendasikan.</p>
                   </button>
                   <button
                     onClick={() => setVideoMode('premium')}
@@ -458,13 +464,13 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                       <span className={`text-sm font-semibold ${videoMode === 'premium' ? 'text-violet-300' : 'text-zinc-300'}`}>Premium</span>
                       <span className="text-xs font-mono text-violet-400 bg-violet-500/10 px-2 py-0.5 rounded-full">~$2.00</span>
                     </div>
-                    <p className="text-[11px] text-zinc-500 leading-relaxed">Kling Avatar v2 Standard. Full integrated movement. Best quality.</p>
+                    <p className="text-[11px] text-zinc-500 leading-relaxed">Kling Avatar v2 Standard. Full integrated movement. Kualitas terbaik.</p>
                   </button>
                 </div>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-zinc-300 mb-2">Website URL <span className="text-zinc-600">(optional)</span></label>
+                <label className="block text-sm font-medium text-zinc-300 mb-2">Website URL <span className="text-zinc-600">(opsional)</span></label>
                 <div className="flex gap-3">
                   <div className="relative flex-1">
                     <Globe size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
@@ -478,28 +484,28 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                     />
                   </div>
                 </div>
-                <p className="text-[10px] text-zinc-600 mt-1">If provided, we'll scrape and research your site automatically</p>
+                <p className="text-[10px] text-zinc-600 mt-1">Jika diisi, AI akan scrape dan riset websitemu secara otomatis</p>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-zinc-300 mb-2">
-                  {url.trim() ? 'Extra context' : 'Describe your product/business'} <span className="text-zinc-600">{url.trim() ? '(optional)' : '(required if no URL)'}</span>
+                  {url.trim() ? 'Konteks tambahan' : 'Deskripsikan produk/bisnis kamu'} <span className="text-zinc-600">{url.trim() ? '(opsional)' : '(wajib jika tidak ada URL)'}</span>
                 </label>
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   rows={2}
                   className="input-field resize-none text-sm"
-                  placeholder="e.g. Pizzería artesanal en Madrid, Coach de productividad, Tienda de ropa deportiva, App de meditación..."
+                  placeholder="Contoh: Kedai kopi susu aren di Jakarta, Pelatih kebugaran online, Toko baju distro, Aplikasi reksa dana..."
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-zinc-300 mb-3">Language</label>
+                <label className="block text-sm font-medium text-zinc-300 mb-3">Bahasa (Language)</label>
                 <div className="flex gap-2 mb-6">
                   {[
                     { id: 'en', label: 'English', flag: '🇺🇸' },
-                    { id: 'es', label: 'Español', flag: '🇪🇸' },
+                    { id: 'id', label: 'Indonesia', flag: '🇮🇩' },
                   ].map((l) => (
                     <button
                       key={l.id}
@@ -516,7 +522,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                   ))}
                 </div>
 
-                <label className="block text-sm font-medium text-zinc-300 mb-3">Actor</label>
+                <label className="block text-sm font-medium text-zinc-300 mb-3">Aktor AI</label>
                 <div className="flex gap-2 mb-6">
                   {[
                     { id: 'female', label: 'Woman', icon: '👩' },
@@ -537,7 +543,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                   ))}
                 </div>
 
-                <label className="block text-sm font-medium text-zinc-300 mb-3">Video Style</label>
+                <label className="block text-sm font-medium text-zinc-300 mb-3">Style Video</label>
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                   {STYLE_OPTIONS.map((s) => (
                     <button
@@ -557,7 +563,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-zinc-300 mb-2">Number of Scripts</label>
+                <label className="block text-sm font-medium text-zinc-300 mb-2">Jumlah Script</label>
                 <div className="flex gap-2">
                   {[1, 2, 3, 5].map((n) => (
                     <button
@@ -590,12 +596,12 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                 {analyzing ? (
                   <>
                     <Loader2 size={16} className="animate-spin" />
-                    {url.trim() ? 'Scraping + Researching web + Generating scripts... (45-90s)' : 'Generating scripts... (20-40s)'}
+                    {url.trim() ? 'Sedang Scraping + Riset web + Generate scripts... (45-90s)' : 'Generate scripts... (20-40s)'}
                   </>
                 ) : (
                   <>
                     <Sparkles size={16} />
-                    {url.trim() ? 'Research & Generate Scripts' : 'Generate Scripts'}
+                    {url.trim() ? 'Riset & Generate Scripts' : 'Generate Scripts'}
                   </>
                 )}
               </button>
@@ -605,18 +611,18 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="glass-panel p-4">
                 <Target size={16} className="text-violet-400 mb-2" />
-                <h3 className="text-sm font-medium text-zinc-300">Deep Research</h3>
-                <p className="text-xs text-zinc-500 mt-1">AI analyzes your product via URL scraping + web research, or generates directly from your description.</p>
+                <h3 className="text-sm font-medium text-zinc-300">Deep Research AI</h3>
+                <p className="text-xs text-zinc-500 mt-1">AI menganalisis produk via URL scraping + web research, atau dari deskripsi yang kamu berikan.</p>
               </div>
               <div className="glass-panel p-4">
                 <MessageSquare size={16} className="text-violet-400 mb-2" />
                 <h3 className="text-sm font-medium text-zinc-300">Pain Point Scripts</h3>
-                <p className="text-xs text-zinc-500 mt-1">Generates hook-problem-solution scripts targeting your audience&apos;s real pain points.</p>
+                <p className="text-xs text-zinc-500 mt-1">Generate script format hook-problem-solution yang menargetkan pain point asli audiensmu.</p>
               </div>
               <div className="glass-panel p-4">
                 <Film size={16} className="text-violet-400 mb-2" />
-                <h3 className="text-sm font-medium text-zinc-300">AI Actor Videos</h3>
-                <p className="text-xs text-zinc-500 mt-1">Realistic AI-generated actors with lip-sync, b-roll, and viral subtitles. From ~$0.50/video.</p>
+                <h3 className="text-sm font-medium text-zinc-300">Video AI Actor</h3>
+                <p className="text-xs text-zinc-500 mt-1">Video UGC dengan AI actor yang realistis, lengkap dengan lip-sync, b-roll, dan subtitle viral.</p>
               </div>
             </div>
           </div>
@@ -1152,17 +1158,17 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                 </div>
                 <div className="text-[10px] text-zinc-600 mt-1">
                   {videoMode === 'lowcost'
-                    ? 'Flux image ($0.05) + ElevenLabs voice ($0.10) + Hailuo 2.3 img2video ($0.19) + VEED Lipsync ($0.20) + Flux b-roll ($0.10)'
-                    : 'Flux image ($0.05) + ElevenLabs voice ($0.10) + Kling avatar ($1.69) + Kling b-roll ($0.70)'
+                    ? 'Flux image ($0.05) + Fish Audio voice ($0.10) + Hailuo 2.3 img2video ($0.19) + VEED Lipsync ($0.20) + Flux b-roll ($0.10)'
+                    : 'Flux image ($0.05) + Fish Audio voice ($0.10) + Kling avatar ($1.69) + Kling b-roll ($0.70)'
                   }
                 </div>
               </div>
 
               {/* Missing keys warning */}
-              {(!falKey || !elevenLabsKey) && (
+              {(!falKey || (!fishAudioKey && !f5TtsUrl)) && (
                 <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center gap-2 text-sm text-amber-400">
                   <AlertCircle size={14} />
-                  {!falKey && 'fal.ai API key missing. '}{!elevenLabsKey && 'ElevenLabs API key missing. '}
+                  {!falKey && 'fal.ai API key missing. '}{!fishAudioKey && !f5TtsUrl && 'Fish Audio API key or F5-TTS URL missing. '}
                   Set them in Settings.
                 </div>
               )}
@@ -1174,7 +1180,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
               </button>
               <button
                 onClick={handleGenerate}
-                disabled={!falKey || !elevenLabsKey || !selectedActor || generating}
+                disabled={!falKey || (!fishAudioKey && !f5TtsUrl) || !selectedActor || generating}
                 className="btn-primary px-6 py-2 text-sm flex items-center gap-2 disabled:opacity-50"
               >
                 {generating ? (

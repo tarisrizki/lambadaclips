@@ -29,10 +29,9 @@ export const Subtitles: React.FC<SubtitlesProps> = ({ config }) => {
     <AbsoluteFill>
       {blocks.map((block, i) => {
         const startFrame = Math.round((block.startMs / 1000) * fps);
-        const durationFrames = Math.max(
-          1,
-          Math.round(((block.endMs - block.startMs) / 1000) * fps)
-        );
+        const nextBlockStartMs = i < blocks.length - 1 ? blocks[i+1].startMs : block.endMs + 500;
+        const endFrame = Math.round((Math.min(block.endMs, nextBlockStartMs) / 1000) * fps);
+        const durationFrames = Math.max(1, endFrame - startFrame);
 
         return (
           <Sequence

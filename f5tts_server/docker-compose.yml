@@ -1,0 +1,16 @@
+services:
+  f5tts:
+    build: .
+    container_name: f5tts_server
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./server.py:/workspace/F5-TTS/server.py
+    restart: unless-stopped

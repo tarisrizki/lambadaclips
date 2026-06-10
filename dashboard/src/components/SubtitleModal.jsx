@@ -31,14 +31,14 @@ const ANIMATION_OPTIONS = [
 export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessing, videoUrl, jobId, clipIndex, existingHook }) {
     const [position, setPosition] = useState('bottom');
     const [fontSize, setFontSize] = useState(24);
-    const [fontName, setFontName] = useState('Verdana');
+    const [fontName, setFontName] = useState('Impact');
     const [fontColor, setFontColor] = useState('#FFFFFF');
     const [highlightColor, setHighlightColor] = useState('#FFDD00');
     const [borderColor, setBorderColor] = useState('#000000');
     const [borderWidth, setBorderWidth] = useState(2);
     const [bgColor, setBgColor] = useState('#000000');
     const [bgOpacity, setBgOpacity] = useState(0.0);
-    const [animation, setAnimation] = useState('pop');
+    const [animation, setAnimation] = useState('none');
     const [showTextEditor, setShowTextEditor] = useState(false);
 
     // Remotion preview state

@@ -6,28 +6,28 @@ export default defineConfig({
   plugins: [react()],
   server: {
     allowedHosts: [
-      'openshorts.app',
-      'www.openshorts.app'
+      'lambadaclips.app',
+      'www.lambadaclips.app'
     ],
     proxy: {
       '/api': {
-        target: 'http://backend:8000',
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
       '/videos': {
-        target: 'http://backend:8000',
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
       '/thumbnails': {
-        target: 'http://backend:8000',
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
       '/gallery': {
-        target: 'http://backend:8000',
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
       '/video': {
-        target: 'http://backend:8000',
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
       '/render': {

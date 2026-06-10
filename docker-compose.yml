@@ -1,32 +1,21 @@
 services:
   backend:
     build: .
-    container_name: openshorts-backend
+    container_name: lambadaclips-backend
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
       - .:/app
       - /app/__pycache__
       - ./output:/app/output
     restart: unless-stopped
 
-  frontend:
-    build: ./dashboard
-    container_name: openshorts-frontend
-    ports:
-      - "5175:5173"
-    volumes:
-      - ./dashboard:/app
-      - /app/node_modules
-    restart: unless-stopped
-    depends_on:
-      - backend
 
   renderer:
     build:
       context: .
       dockerfile: render-service/Dockerfile
-    container_name: openshorts-renderer
+    container_name: lambadaclips-renderer
     ports:
       - "3100:3100"
     volumes:

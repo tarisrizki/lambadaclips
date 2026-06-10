@@ -6,11 +6,15 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        inter: ['Inter', 'sans-serif'],
+      },
       colors: {
         background: "#09090b",
         surface: "#18181b",
-        primary: "#3b82f6",
+        primary: "#6366f1",
         accent: "#8b5cf6",
+        tertiary: "#a78bfa",
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',

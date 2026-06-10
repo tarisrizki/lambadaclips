@@ -29,13 +29,13 @@ load_dotenv()
 ASPECT_RATIO = 9 / 16
 
 GEMINI_PROMPT_TEMPLATE = """
-You are a senior short-form video editor. Read the ENTIRE transcript and word-level timestamps to choose the 3–15 MOST VIRAL moments for TikTok/IG Reels/YouTube Shorts. Each clip must be between 15 and 60 seconds long.
+You are a senior short-form video editor. Read the ENTIRE transcript and word-level timestamps to choose the 3–15 MOST VIRAL moments for TikTok/IG Reels/YouTube Shorts. Each clip must be between 30 and 60 seconds long.
 
 ⚠️ FFMPEG TIME CONTRACT — STRICT REQUIREMENTS:
 - Return timestamps in ABSOLUTE SECONDS from the start of the video (usable in: ffmpeg -ss <start> -to <end> -i <input> ...).
 - Only NUMBERS with decimal point, up to 3 decimals (examples: 0, 1.250, 17.350).
 - Ensure 0 ≤ start < end ≤ VIDEO_DURATION_SECONDS.
-- Each clip between 15 and 60 s (inclusive).
+- Each clip between 30 and 60 s (inclusive).
 - Prefer starting 0.2–0.4 s BEFORE the hook and ending 0.2–0.4 s AFTER the payoff.
 - Use silence moments for natural cuts; never cut in the middle of a word or phrase.
 - STRICTLY FORBIDDEN to use time formats other than absolute seconds.
@@ -50,7 +50,7 @@ WORDS_JSON (array of {{w, s, e}} where s/e are seconds):
 
 STRICT EXCLUSIONS:
 - No generic intros/outros or purely sponsorship segments unless they contain the hook.
-- No clips < 15 s or > 60 s.
+- No clips < 30 s or > 60 s.
 
 OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). In the descriptions, ALWAYS include a CTA like "Follow me and comment X and I'll send you the workflow" (especially if discussing an n8n workflow):
 {{
@@ -58,6 +58,7 @@ OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by pre
     {{
       "start": <number in seconds, e.g., 12.340>,
       "end": <number in seconds, e.g., 37.900>,
+      "virality_score": <integer from 1 to 100 representing how viral this clip will be>,
       "video_description_for_tiktok": "<description for TikTok oriented to get views>",
       "video_description_for_instagram": "<description for Instagram oriented to get views>",
       "video_title_for_youtube_short": "<title for YouTube Short oriented to get views 100 chars max>",
@@ -575,16 +576,20 @@ Technical Details: {str(e)}
     
     return downloaded_file, sanitized_title
 
-def process_video_to_vertical(input_video, final_output_video):
+def process_video_to_vertical(input_video, final_output_video, draft_mode=True, start_time=None, end_time=None):
     """
-    Core logic to convert horizontal video to vertical using scene detection and Active Speaker Tracking (MediaPipe).
+    1. Detect scenes
+    2. Track speaker (active tracking)
+    3. Crop frames dynamically
+    4. Export
     """
-    script_start_time = time.time()
+    import tempfile
+    import uuid
+    uid = uuid.uuid4().hex[:6]
+    temp_video_output = f"temp_video_{uid}.mp4"
+    temp_audio_output = f"temp_audio_{uid}.mp4"
     
-    # Define temporary file paths based on the output name
-    base_name = os.path.splitext(final_output_video)[0]
-    temp_video_output = f"{base_name}_temp_video.mp4"
-    temp_audio_output = f"{base_name}_temp_audio.aac"
+    print(f"\n   {'🎬 [ENHANCE] Processing High Quality' if not draft_mode else '🎬 [DRAFT] Processing Fast Preview'}")
     
     # Clean up previous temp files if they exist
     if os.path.exists(temp_video_output): os.remove(temp_video_output)
@@ -609,10 +614,14 @@ def process_video_to_vertical(input_video, final_output_video):
     print("\n   🧠 Step 2: Preparing Active Tracking...")
     original_width, original_height = get_video_resolution(input_video)
     
-    OUTPUT_HEIGHT = original_height
-    OUTPUT_WIDTH = int(OUTPUT_HEIGHT * ASPECT_RATIO)
-    if OUTPUT_WIDTH % 2 != 0:
-        OUTPUT_WIDTH += 1
+    if draft_mode:
+        # Fast Draft Mode (480x854)
+        OUTPUT_WIDTH = 480
+        OUTPUT_HEIGHT = 854
+    else:
+        # Enhance Mode (1080x1920)
+        OUTPUT_WIDTH = 1080
+        OUTPUT_HEIGHT = 1920
 
     # Initialize Cameraman
     cameraman = SmoothedCameraman(OUTPUT_WIDTH, OUTPUT_HEIGHT, original_width, original_height)
@@ -628,13 +637,21 @@ def process_video_to_vertical(input_video, final_output_video):
         'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo',
         '-s', f'{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}', '-pix_fmt', 'bgr24',
         '-r', str(fps), '-i', '-', '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
         '-preset', 'fast', '-crf', '23', '-an', temp_video_output
     ]
 
     ffmpeg_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     cap = cv2.VideoCapture(input_video)
+    
+    # Handle start/end time seek if provided
+    if start_time is not None:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(start_time * fps))
+        
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if end_time is not None:
+        total_frames = int((end_time - (start_time or 0)) * fps)
     
     frame_number = 0
     current_scene_index = 0
@@ -648,7 +665,7 @@ def process_video_to_vertical(input_video, final_output_video):
     speaker_tracker = SpeakerTracker(cooldown_frames=30)
 
     with tqdm(total=total_frames, desc="   Processing", file=sys.stdout) as pbar:
-        while cap.isOpened():
+        while cap.isOpened() and frame_number < total_frames:
             ret, frame = cap.read()
             if not ret:
                 break
@@ -711,14 +728,16 @@ def process_video_to_vertical(input_video, final_output_video):
         print("   Stderr:", stderr_output)
         return False
 
-    print("\n   🔊 Step 5: Extracting audio...")
-    audio_extract_command = [
-        'ffmpeg', '-y', '-i', input_video, '-vn', '-acodec', 'copy', temp_audio_output
-    ]
+    # --- Extract Audio ---
+    audio_cmd = ['ffmpeg', '-y', '-i', input_video]
+    if start_time is not None and end_time is not None:
+        audio_cmd.extend(['-ss', str(start_time), '-to', str(end_time)])
+    audio_cmd.extend(['-q:a', '0', '-map', 'a', temp_audio_output])
+    
     try:
-        subprocess.run(audio_extract_command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        subprocess.run(audio_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        has_audio = True
     except subprocess.CalledProcessError:
-        print("\n   ❌ Audio extraction failed (maybe no audio?). Proceeding without audio.")
         pass
 
     print("\n   ✨ Step 6: Merging...")
@@ -802,7 +821,7 @@ def get_viral_clips(transcript_result, video_duration):
 
     client = genai.Client(api_key=api_key)
     
-    # We use gemini-2.5-flash as requested.
+    # Switched to gemini-2.5-flash for better JSON output reliability
     model_name = 'gemini-2.5-flash' 
     
     print(f"🤖  Initializing Gemini with model: {model_name}")
@@ -875,13 +894,33 @@ def get_viral_clips(transcript_result, video_duration):
         text = text.strip()
         
         result_json = json.loads(text)
+        
+        # --- ENFORCE MINIMUM 30 SECONDS PER CLIP ---
+        if 'shorts' in result_json:
+            for clip in result_json['shorts']:
+                start = float(clip.get('start', 0))
+                end = float(clip.get('end', 0))
+                duration = end - start
+                
+                if duration < 30.0:
+                    shortfall = 30.0 - duration
+                    # Try to add to the end first, cap at video_duration
+                    new_end = end + shortfall
+                    if new_end > video_duration:
+                        # If we hit the end of the video, push the start backward
+                        remaining_shortfall = new_end - video_duration
+                        new_end = video_duration
+                        new_start = max(0.0, start - remaining_shortfall)
+                        clip['start'] = new_start
+                    clip['end'] = new_end
+        
         if cost_analysis:
             result_json['cost_analysis'] = cost_analysis
             
         return result_json
     except Exception as e:
         print(f"❌ Gemini Error: {e}")
-        return None
+        return {'error': str(e)}
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
@@ -894,7 +933,33 @@ if __name__ == '__main__':
     parser.add_argument('--keep-original', action='store_true', help="Keep the downloaded YouTube video.")
     parser.add_argument('--skip-analysis', action='store_true', help="Skip AI analysis and convert the whole video.")
     
+    # Enhance mode options
+    parser.add_argument('--enhance', action='store_true', help="Enhance a specific clip to FullHD.")
+    parser.add_argument('--start', type=float, help="Start time in seconds for enhance.")
+    parser.add_argument('--end', type=float, help="End time in seconds for enhance.")
+    
     args = parser.parse_args()
+
+    # 0. API Health Check
+    if not args.skip_analysis and not args.enhance:
+        print("🔍 Checking Gemini API health before starting...")
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            print("❌ Error: GEMINI_API_KEY not found in environment variables.")
+            sys.exit(1)
+        try:
+            from google import genai
+            client = genai.Client(api_key=api_key)
+            client.models.generate_content(model='gemini-2.5-flash', contents="Ping")
+            print("✅ Gemini API is healthy and reachable.")
+        except Exception as e:
+            print("\n❌ ========================================= ❌")
+            print("❌ FATAL ERROR: GAGAL MENGHUBUNGI GEMINI API ❌")
+            print("❌ ========================================= ❌")
+            print(f"Alasan: {e}")
+            print("\nServer Gemini Google saat ini sedang sibuk (High Demand) atau API Key tidak valid.")
+            print("Proses dihentikan sebelum mendownload dan transkripsi untuk menghemat waktu Anda.")
+            sys.exit(1)
 
     script_start_time = time.time()
     
@@ -908,7 +973,7 @@ if __name__ == '__main__':
     if args.url:
         # For multi-clip runs, treat --output as an OUTPUT DIRECTORY (create it if needed).
         # For whole-video runs (--skip-analysis), --output can be a file path.
-        if args.output and not args.skip_analysis:
+        if args.output and not args.skip_analysis and not args.enhance:
             output_dir = _ensure_dir(args.output)
         else:
             # If output is a directory, use it; if it's a filename, use its directory; else default "."
@@ -924,7 +989,7 @@ if __name__ == '__main__':
         input_video = args.input
         video_title = os.path.splitext(os.path.basename(input_video))[0]
         
-        if args.output and not args.skip_analysis:
+        if args.output and not args.skip_analysis and not args.enhance:
             # For multi-clip runs, treat --output as an OUTPUT DIRECTORY (create it if needed).
             output_dir = _ensure_dir(args.output)
         else:
@@ -940,13 +1005,35 @@ if __name__ == '__main__':
         print(f"❌ Input file not found: {input_video}")
         exit(1)
 
-    # 2. Decision: Analyze clips or process whole?
+    # 2. Handle Enhance Mode
+    if args.enhance:
+        if args.start is None or args.end is None:
+            print("❌ --start and --end must be provided for --enhance.")
+            exit(1)
+        
+        print(f"🚀 Enhancing clip from {args.start}s to {args.end}s to FullHD...")
+        # For enhance mode, input_video is the original wide video. We must first extract just the 30s portion
+        # so that process_video_to_vertical (which reads all frames) only processes that portion.
+        temp_cut = os.path.join(output_dir, f"temp_enhance_cut_{int(time.time())}.mp4")
+        subprocess.run(['ffmpeg', '-y', '-ss', str(args.start), '-to', str(args.end), 
+                        '-i', input_video, '-c:v', 'libx264', '-crf', '18', '-preset', 'fast', 
+                        '-c:a', 'aac', temp_cut], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        
+        output_file = args.output if args.output and not os.path.isdir(args.output) else os.path.join(output_dir, f"{video_title}_fullhd.mp4")
+        process_video_to_vertical(temp_cut, output_file, draft_mode=False)
+        
+        if os.path.exists(temp_cut):
+            os.remove(temp_cut)
+        print(f"✅ Enhance completed: {output_file}")
+        exit(0)
+
+    # 3. Decision: Analyze clips or process whole?
     if args.skip_analysis:
         print("⏩ Skipping analysis, processing entire video...")
         output_file = args.output if args.output else os.path.join(output_dir, f"{video_title}_vertical.mp4")
-        process_video_to_vertical(input_video, output_file)
+        process_video_to_vertical(input_video, output_file, draft_mode=True)
     else:
-        # 3. Transcribe
+        # 4. Transcribe
         transcript = transcribe_video(input_video)
         
         # Get duration
@@ -960,14 +1047,26 @@ if __name__ == '__main__':
         clips_data = get_viral_clips(transcript, duration)
         
         if not clips_data or 'shorts' not in clips_data:
-            print("❌ Failed to identify clips. Converting whole video as fallback.")
-            output_file = os.path.join(output_dir, f"{video_title}_vertical.mp4")
-            process_video_to_vertical(input_video, output_file)
+            error_msg = clips_data.get('error', 'Unknown error') if isinstance(clips_data, dict) else 'Unknown error'
+            print("\n❌ ========================================= ❌")
+            print("❌ FATAL ERROR: GAGAL MENGHUBUNGI GEMINI API ❌")
+            print("❌ ========================================= ❌")
+            print(f"Alasan: {error_msg}")
+            print("\nServer Gemini Google saat ini sedang sibuk (High Demand) atau API Key tidak valid.")
+            print("Proses dihentikan secara otomatis tanpa mode fallback agar tidak memakan waktu lama.")
+            sys.exit(1)
         else:
+            # Sort by virality_score descending (default to 0 if not present)
+            clips_data['shorts'] = sorted(
+                clips_data['shorts'], 
+                key=lambda x: x.get('virality_score', 0), 
+                reverse=True
+            )
             print(f"🔥 Found {len(clips_data['shorts'])} viral clips!")
             
             # Save metadata
             clips_data['transcript'] = transcript # Save full transcript for subtitles
+            clips_data['original_video'] = input_video # Keep reference for enhance mode
             metadata_file = os.path.join(output_dir, f"{video_title}_metadata.json")
             with open(metadata_file, 'w') as f:
                 json.dump(clips_data, f, indent=2)
@@ -1009,9 +1108,10 @@ if __name__ == '__main__':
                     os.remove(clip_temp_path)
 
     # Clean up original if requested
-    if args.url and not args.keep_original and os.path.exists(input_video):
-        os.remove(input_video)
-        print(f"🗑️  Cleaned up downloaded video.")
+    # (Disabled so that Enhance mode can use the original video later)
+    # if args.url and not args.keep_original and os.path.exists(input_video):
+    #     os.remove(input_video)
+    #     print(f"🗑️  Cleaned up downloaded video.")
 
     total_time = time.time() - script_start_time
     print(f"\n⏱️  Total execution time: {total_time:.2f}s")

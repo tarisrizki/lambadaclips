@@ -6,12 +6,13 @@ import HookModal from './HookModal';
 import TranslateModal from './TranslateModal';
 import { renderInBrowser } from '../lib/renderInBrowser';
 
-export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, onPlay, onPause }) {
+export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUserId, geminiApiKey, fishAudioKey, onPlay, onPause }) {
     const [showModal, setShowModal] = useState(false);
     const [showSubtitleModal, setShowSubtitleModal] = useState(false);
     const videoRef = React.useRef(null);
-    const originalVideoUrl = getApiUrl(clip.video_url); // Never changes — used for Remotion previews
-    const [currentVideoUrl, setCurrentVideoUrl] = useState(originalVideoUrl);
+    const originalVideoUrl = getApiUrl(clip.video_url); // Original raw video URL
+    const [baseVideoUrl, setBaseVideoUrl] = useState(originalVideoUrl); // Tracks the current base video (raw or enhanced)
+    const [currentVideoUrl, setCurrentVideoUrl] = useState(baseVideoUrl);
 
     const [platforms, setPlatforms] = useState({
         tiktok: true,
@@ -27,9 +28,14 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
     const [postResult, setPostResult] = useState(null);
 
     const [isEditing, setIsEditing] = useState(false);
+    const [isEdited, setIsEdited] = useState(false);
+
     const [isSubtitling, setIsSubtitling] = useState(false);
+    const [isSubtitled, setIsSubtitled] = useState(false);
     const [isHooking, setIsHooking] = useState(false);
+    const [isHooked, setIsHooked] = useState(false);
     const [isTranslating, setIsTranslating] = useState(false);
+    const [isTranslated, setIsTranslated] = useState(false);
     const [showHookModal, setShowHookModal] = useState(false);
     const [showTranslateModal, setShowTranslateModal] = useState(false);
     const [editError, setEditError] = useState(null);
@@ -81,7 +87,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 body: JSON.stringify({
                     job_id: jobId,
                     clip_index: index,
-                    input_filename: currentVideoUrl.split('/').pop()
+                    input_filename: currentVideoUrl.startsWith('blob:') ? baseVideoUrl.split('/').pop() : currentVideoUrl.split('/').pop()
                 })
             });
 
@@ -91,7 +97,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                     const newLayers = { ...activeLayers, effects: data.effects };
                     setActiveLayers(newLayers);
                     const blobUrl = await renderInBrowser({
-                        videoUrl: originalVideoUrl,
+                        videoUrl: baseVideoUrl,
                         durationInSeconds: clipDuration,
                         subtitles: newLayers.subtitles,
                         hook: newLayers.hook,
@@ -99,6 +105,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                     });
                     setCurrentVideoUrl(blobUrl);
                     if (videoRef.current) videoRef.current.load();
+                    setIsEdited(true);
                     return;
                 }
             }
@@ -113,7 +120,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 body: JSON.stringify({
                     job_id: jobId,
                     clip_index: index,
-                    input_filename: currentVideoUrl.split('/').pop()
+                    input_filename: currentVideoUrl.startsWith('blob:') ? baseVideoUrl.split('/').pop() : currentVideoUrl.split('/').pop()
                 })
             });
 
@@ -133,6 +140,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 if (videoRef.current) {
                     videoRef.current.load();
                 }
+                setIsEdited(true);
             }
 
         } catch (e) {
@@ -142,6 +150,8 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
             setIsEditing(false);
         }
     };
+
+
 
     const handleSubtitle = async (options) => {
         setIsSubtitling(true);
@@ -161,6 +171,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 setCurrentVideoUrl(blobUrl);
                 if (videoRef.current) videoRef.current.load();
                 setShowSubtitleModal(false);
+                setIsSubtitled(true);
                 return;
             }
 
@@ -179,7 +190,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                     border_width: options.borderWidth,
                     bg_color: options.bgColor,
                     bg_opacity: options.bgOpacity,
-                    input_filename: currentVideoUrl.split('/').pop()
+                    input_filename: currentVideoUrl.startsWith('blob:') ? baseVideoUrl.split('/').pop() : currentVideoUrl.split('/').pop()
                 })
             });
 
@@ -189,6 +200,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 setCurrentVideoUrl(getApiUrl(data.new_video_url));
                 if (videoRef.current) videoRef.current.load();
                 setShowSubtitleModal(false);
+                setIsSubtitled(true);
             }
         } catch (e) {
             setEditError(e.message);
@@ -207,7 +219,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 const newLayers = { ...activeLayers, hook: hookData.remotion };
                 setActiveLayers(newLayers);
                 const blobUrl = await renderInBrowser({
-                    videoUrl: originalVideoUrl,
+                    videoUrl: baseVideoUrl,
                     durationInSeconds: clipDuration,
                     subtitles: newLayers.subtitles,
                     hook: newLayers.hook,
@@ -216,6 +228,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 setCurrentVideoUrl(blobUrl);
                 if (videoRef.current) videoRef.current.load();
                 setShowHookModal(false);
+                setIsHooked(true);
                 return;
             }
 
@@ -233,7 +246,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                     text: payload.text,
                     position: payload.position,
                     size: payload.size,
-                    input_filename: currentVideoUrl.split('/').pop()
+                    input_filename: currentVideoUrl.startsWith('blob:') ? baseVideoUrl.split('/').pop() : currentVideoUrl.split('/').pop()
                 })
             });
 
@@ -243,6 +256,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 setCurrentVideoUrl(getApiUrl(data.new_video_url));
                 if (videoRef.current) videoRef.current.load();
                 setShowHookModal(false);
+                setIsHooked(true);
             }
         } catch (e) {
             setEditError(e.message);
@@ -257,18 +271,18 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
         setIsTranslating(true);
         setEditError(null);
         try {
-            const apiKey = elevenLabsKey;
+            const apiKey = fishAudioKey;
             console.log('[Translate] API Key available:', !!apiKey);
 
             if (!apiKey) {
-                throw new Error("ElevenLabs API Key is missing. Please set it in Settings.");
+                throw new Error("Fish Audio API Key is missing. Please set it in Settings.");
             }
 
             const requestBody = {
                 job_id: jobId,
                 clip_index: index,
                 target_language: options.targetLanguage,
-                input_filename: currentVideoUrl.split('/').pop()
+                input_filename: currentVideoUrl.startsWith('blob:') ? baseVideoUrl.split('/').pop() : currentVideoUrl.split('/').pop()
             };
             console.log('[Translate] Request body:', requestBody);
             console.log('[Translate] Sending request to /api/translate');
@@ -277,7 +291,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-ElevenLabs-Key': apiKey
+                    'X-FishAudio-Key': apiKey
                 },
                 body: JSON.stringify(requestBody)
             });
@@ -304,6 +318,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                     videoRef.current.load();
                 }
                 setShowTranslateModal(false);
+                setIsTranslated(true);
             }
 
         } catch (e) {
@@ -404,10 +419,22 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                         }
                     }}
                 />
-                <div className="absolute top-3 left-3 flex gap-2">
-                    <span className="bg-black/60 backdrop-blur-md text-white text-[10px] font-bold px-2 py-1 rounded-md border border-white/10 uppercase tracking-wide">
-                        Clip {index + 1}
-                    </span>
+                <div className="absolute top-3 left-3 flex flex-col gap-2">
+                    <div className="flex gap-2">
+                        <span className="bg-black/60 backdrop-blur-md text-white text-[10px] font-bold px-2 py-1 rounded-md border border-white/10 uppercase tracking-wide">
+                            Clip {index + 1}
+                        </span>
+                        {index === 0 && (
+                            <span className="bg-gradient-to-r from-orange-500 to-pink-500 text-white text-[10px] font-bold px-2 py-1 rounded-md border border-orange-500/50 uppercase tracking-wide shadow-lg shadow-orange-500/30 flex items-center gap-1">
+                                🔥 Best Clip
+                            </span>
+                        )}
+                    </div>
+                    {clip.virality_score && (
+                        <span className="bg-black/60 backdrop-blur-md text-green-400 text-[10px] font-bold px-2 py-1 rounded-md border border-green-500/30 self-start">
+                            Viral Score: {clip.virality_score}/100
+                        </span>
+                    )}
                 </div>
 
                 {/* Auto Edit Overlay if Processing */}
@@ -469,40 +496,58 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
 
                 {/* Actions Footer */}
                 <div className="grid grid-cols-2 gap-3 mt-auto pt-4 border-t border-white/5">
+
+
                     <button
                         onClick={handleAutoEdit}
-                        disabled={isEditing}
-                        className="col-span-1 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-purple-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1"
+                        disabled={isEditing || isEdited}
+                        className={`col-span-1 py-2 rounded-lg text-xs font-bold shadow-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1 ${
+                            isEdited
+                            ? 'bg-green-500/20 text-green-500 shadow-green-500/20'
+                            : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-purple-500/20'
+                        }`}
                     >
-                        {isEditing ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                        {isEditing ? 'Editing...' : 'Auto Edit'}
+                        {isEditing ? <Loader2 size={14} className="animate-spin" /> : (isEdited ? <CheckCircle size={14} /> : <Wand2 size={14} />)}
+                        {isEditing ? 'Editing...' : (isEdited ? 'Edited' : 'Auto Edit')}
                     </button>
 
                     <button
                         onClick={() => setShowSubtitleModal(true)}
-                        disabled={isSubtitling}
-                        className="col-span-1 py-2 bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-orange-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1"
+                        disabled={isSubtitling || isSubtitled}
+                        className={`col-span-1 py-2 rounded-lg text-xs font-bold shadow-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1 ${
+                            isSubtitled
+                            ? 'bg-green-500/20 text-green-500 shadow-green-500/20'
+                            : 'bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white shadow-orange-500/20'
+                        }`}
                     >
-                        {isSubtitling ? <Loader2 size={14} className="animate-spin" /> : <Type size={14} />}
-                        {isSubtitling ? 'Adding...' : 'Subtitles'}
+                        {isSubtitling ? <Loader2 size={14} className="animate-spin" /> : (isSubtitled ? <CheckCircle size={14} /> : <Type size={14} />)}
+                        {isSubtitling ? 'Adding...' : (isSubtitled ? 'Subtitled' : 'Subtitles')}
                     </button>
 
                     <button
                         onClick={() => setShowHookModal(true)}
-                        disabled={isHooking}
-                        className="col-span-1 py-2 bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-black rounded-lg text-xs font-bold shadow-lg shadow-yellow-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1"
+                        disabled={isHooking || isHooked}
+                        className={`col-span-1 py-2 rounded-lg text-xs font-bold shadow-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1 ${
+                            isHooked
+                            ? 'bg-green-500/20 text-green-500 shadow-green-500/20'
+                            : 'bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-black shadow-yellow-500/20'
+                        }`}
                     >
-                        {isHooking ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                        {isHooking ? 'Adding...' : 'Viral Hook'}
+                        {isHooking ? <Loader2 size={14} className="animate-spin" /> : (isHooked ? <CheckCircle size={14} /> : <Wand2 size={14} />)}
+                        {isHooking ? 'Adding...' : (isHooked ? 'Hooked' : 'Viral Hook')}
                     </button>
 
                     <button
                         onClick={() => setShowTranslateModal(true)}
-                        disabled={isTranslating}
-                        className="col-span-1 py-2 bg-gradient-to-r from-green-500 to-teal-600 hover:from-green-400 hover:to-teal-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-green-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1"
+                        disabled={isTranslating || isTranslated}
+                        className={`col-span-1 py-2 rounded-lg text-xs font-bold shadow-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1 ${
+                            isTranslated
+                            ? 'bg-green-500/20 text-green-500 shadow-green-500/20'
+                            : 'bg-gradient-to-r from-green-500 to-teal-600 hover:from-green-400 hover:to-teal-500 text-white shadow-green-500/20'
+                        }`}
                     >
-                        {isTranslating ? <Loader2 size={14} className="animate-spin" /> : <Languages size={14} />}
-                        {isTranslating ? 'Translating...' : 'Dub Voice'}
+                        {isTranslating ? <Loader2 size={14} className="animate-spin" /> : (isTranslated ? <CheckCircle size={14} /> : <Languages size={14} />)}
+                        {isTranslating ? 'Translating...' : (isTranslated ? 'Dubbed' : 'Dub Voice')}
                     </button>
 
                     <button
@@ -677,7 +722,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 onTranslate={handleTranslate}
                 isProcessing={isTranslating}
                 videoUrl={currentVideoUrl}
-                hasApiKey={!!elevenLabsKey}
+                hasApiKey={!!fishAudioKey}
             />
 
         </div>

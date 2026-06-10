@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, FileVideo, Sparkles, Youtube, Instagram, Share2, LogOut, ChevronDown, Check, Activity, LayoutDashboard, Settings, PlusCircle, History, Menu, X, Terminal, Shield, LayoutGrid, Image, Globe, RotateCcw, Calendar, AlertTriangle, KeyRound, Bot, Users, Smartphone, ExternalLink, Copy, CheckCircle2 } from 'lucide-react';
 import KeyInput from './components/KeyInput';
 import MediaInput from './components/MediaInput';
@@ -13,7 +14,7 @@ import { getApiUrl } from './config';
 
 // Enhanced "Encryption" using XOR + Base64 with a Salt
 // This is better than plain Base64 but still client-side.
-const SECRET_KEY = import.meta.env.VITE_ENCRYPTION_KEY || "OpenShorts-Static-Salt-Change-Me";
+const SECRET_KEY = import.meta.env.VITE_ENCRYPTION_KEY || "LambadaClips-Static-Salt-Change-Me";
 const ENCRYPTION_PREFIX = "ENC:";
 
 const encrypt = (text) => {
@@ -123,7 +124,7 @@ const UserProfileSelector = ({ profiles, selectedUserId, onSelect }) => {
   );
 };
 
-const SESSION_KEY = 'openshorts_session';
+const SESSION_KEY = 'lambadaclips_session';
 const SESSION_MAX_AGE = 3600000; // 1 hour (matches server job retention)
 
 // Mock polling function
@@ -134,6 +135,7 @@ const pollJob = async (jobId) => {
 };
 
 function App() {
+
   const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_key') || '');
   // Social API State - Load encrypted or plain
   const [uploadPostKey, setUploadPostKey] = useState(() => {
@@ -141,12 +143,26 @@ function App() {
     if (stored) return decrypt(stored);
     return '';
   });
-  // ElevenLabs API State - Load encrypted
-  const [elevenLabsKey, setElevenLabsKey] = useState(() => {
-    const stored = localStorage.getItem('elevenLabsKey_v1');
+  // Fish Audio API State - Load encrypted
+  const [fishAudioKey, setFishAudioKey] = useState(() => {
+    const stored = localStorage.getItem('fishAudioKey_v1');
     if (stored) return decrypt(stored);
     return '';
   });
+
+  // F5-TTS State
+  const [f5TtsUrl, setF5TtsUrl] = useState(() => localStorage.getItem('f5TtsUrl_v1') || 'http://localhost:8000/api/tts');
+  const [f5TtsRefText, setF5TtsRefText] = useState(() => localStorage.getItem('f5TtsRefText_v1') || '');
+  const [f5TtsRefAudio, setF5TtsRefAudio] = useState(() => localStorage.getItem('f5TtsRefAudio_v1') || '');
+
+  // Auto-save API keys
+  useEffect(() => {
+    if (apiKey) localStorage.setItem('gemini_key', apiKey);
+  }, [apiKey]);
+  
+  useEffect(() => {
+    if (uploadPostKey) localStorage.setItem('uploadPostKey_v3', encrypt(uploadPostKey));
+  }, [uploadPostKey]);
 
   // fal.ai API State - Load encrypted
   const [falKey, setFalKey] = useState(() => {
@@ -246,10 +262,16 @@ function App() {
   }, [uploadPostKey, uploadUserId]);
 
   useEffect(() => {
-    if (elevenLabsKey) {
-      localStorage.setItem('elevenLabsKey_v1', encrypt(elevenLabsKey));
+    if (fishAudioKey) {
+      localStorage.setItem('fishAudioKey_v1', encrypt(fishAudioKey));
     }
-  }, [elevenLabsKey]);
+  }, [fishAudioKey]);
+
+  useEffect(() => {
+    localStorage.setItem('f5TtsUrl_v1', f5TtsUrl);
+    localStorage.setItem('f5TtsRefText_v1', f5TtsRefText);
+    localStorage.setItem('f5TtsRefAudio_v1', f5TtsRefAudio);
+  }, [f5TtsUrl, f5TtsRefText, f5TtsRefAudio]);
 
   useEffect(() => {
     if (falKey) {
@@ -315,13 +337,12 @@ function App() {
         alert("No profiles found for this API Key.");
       }
     } catch (e) {
-      alert("Error fetching User Profiles. Please check key.");
-      console.error(e);
+      console.error("Error fetching User Profiles:", e);
     }
   };
 
   const handleProcess = async (data) => {
-    if (!apiKey || !uploadPostKey) {
+    if (!apiKey) {
       setShowKeyModal(true);
       return;
     }
@@ -331,22 +352,17 @@ function App() {
     setProcessingMedia(data);
 
     try {
-      let body;
-      const headers = { 'X-Gemini-Key': apiKey };
-
+      const body = new FormData();
       if (data.type === 'url') {
-        headers['Content-Type'] = 'application/json';
-        body = JSON.stringify({ url: data.payload, acknowledged: !!data.acknowledged });
+        body.append('url', data.payload);
       } else {
-        const formData = new FormData();
-        formData.append('file', data.payload);
-        formData.append('acknowledged', data.acknowledged ? 'true' : 'false');
-        body = formData;
+        body.append('file', data.payload);
       }
+      body.append('acknowledged', data.acknowledged ? 'true' : 'false');
 
       const res = await fetch(getApiUrl('/api/process'), {
         method: 'POST',
-        headers: data.type === 'url' ? headers : { 'X-Gemini-Key': apiKey },
+        headers: { 'X-Gemini-Key': apiKey },
         body
       });
 
@@ -372,12 +388,12 @@ function App() {
   // --- UI Components ---
 
   const Sidebar = () => (
-    <div className="w-20 lg:w-64 bg-surface border-r border-white/5 flex flex-col h-full shrink-0 transition-all duration-300">
+    <div className="w-20 lg:w-64 bg-surface/40 backdrop-blur-2xl border-r border-white/10 flex flex-col h-full shrink-0 transition-all duration-300">
       <div className="p-6 flex items-center gap-3">
         <div className="w-8 h-8 bg-white/5 rounded-lg flex items-center justify-center shrink-0 overflow-hidden border border-white/5">
-          <img src="/logo-openshorts.png" alt="Logo" className="w-full h-full object-cover" />
+          <img src="/logo-lambadaclips.png" alt="Logo" className="w-full h-full object-cover" />
         </div>
-        <span className="font-bold text-lg text-white hidden lg:block tracking-tight">OpenShorts</span>
+        <span className="font-bold text-lg text-white hidden lg:block tracking-tight">LambadaClips</span>
       </div>
 
       <nav className="flex-1 px-4 py-4 space-y-2">
@@ -397,13 +413,7 @@ function App() {
           <span className="font-medium hidden lg:block">AI Shorts</span>
         </button>
 
-        <button
-          onClick={() => setActiveTab('ai-agent')}
-          className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-colors ${activeTab === 'ai-agent' ? 'bg-emerald-500/10 text-emerald-400' : 'text-zinc-400 hover:text-white hover:bg-white/5'}`}
-        >
-          <Bot size={20} />
-          <span className="font-medium hidden lg:block">AI Agent</span>
-        </button>
+
 
         <button
           onClick={() => setActiveTab('ugc-gallery')}
@@ -437,36 +447,6 @@ function App() {
           <span className="font-medium hidden lg:block">Settings</span>
         </button>
       </nav>
-
-      <div className="p-4 border-t border-white/5 space-y-2">
-        <a
-          href="#"
-          onClick={(e) => { e.preventDefault(); localStorage.removeItem('openshorts_skip_landing'); window.location.hash = ''; window.location.reload(); }}
-          className="flex items-center gap-2 p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-full bg-primary/20 text-primary flex items-center justify-center shrink-0">
-            <Globe size={16} />
-          </div>
-          <div className="hidden lg:block overflow-hidden">
-            <p className="text-sm font-bold text-white leading-none mb-0.5">Landing Page</p>
-            <p className="text-[10px] text-zinc-400 group-hover:text-zinc-300 transition-colors truncate">View website</p>
-          </div>
-        </a>
-        <a
-          href="https://github.com/mutonby/openshorts"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center shrink-0">
-            <svg height="20" viewBox="0 0 16 16" version="1.1" width="20" aria-hidden="true"><path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
-          </div>
-          <div className="hidden lg:block overflow-hidden">
-            <p className="text-sm font-bold text-white leading-none mb-0.5">Open Source</p>
-            <p className="text-[10px] text-zinc-400 group-hover:text-zinc-300 transition-colors truncate">Free & Community Driven</p>
-          </div>
-        </a>
-      </div>
     </div>
   );
 
@@ -503,36 +483,28 @@ function App() {
               />
             )}
 
-            {(!apiKey || !uploadPostKey) && (
+            {!apiKey && (
               <button
                 onClick={() => setActiveTab('settings')}
                 className="text-xs text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-1 rounded-full border border-amber-500/30 transition-colors flex items-center gap-1.5"
                 title="Click to configure your API keys"
               >
                 <AlertTriangle size={12} />
-                {!apiKey && !uploadPostKey
-                  ? 'Gemini & Upload-Post keys missing'
-                  : !apiKey
-                    ? 'Gemini API Key Missing'
-                    : 'Upload-Post API Key Missing'}
+                Gemini API Key Missing
               </button>
             )}
           </div>
         </header>
 
         {/* Persistent Missing Keys Banner — visible on every screen */}
-        {(!apiKey || !uploadPostKey) && activeTab !== 'settings' && (
+        {!apiKey && activeTab !== 'settings' && (
           <div className="mx-6 mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between gap-4 shrink-0 animate-[fadeIn_0.3s_ease-out]">
             <div className="flex items-center gap-3 text-sm text-amber-200">
               <KeyRound size={16} className="shrink-0 text-amber-400" />
               <div>
                 <span className="font-semibold">Required API keys missing.</span>{' '}
                 <span className="text-amber-200/80">
-                  {!apiKey && !uploadPostKey
-                    ? 'Set your Gemini and Upload-Post API keys to use OpenShorts.'
-                    : !apiKey
-                      ? 'Set your Gemini API key to use OpenShorts.'
-                      : 'Set your Upload-Post API key to use OpenShorts.'}
+                  Set your Gemini API key to use LambadaClips.
                 </span>
               </div>
             </div>
@@ -579,8 +551,8 @@ function App() {
                   <span className="text-[10px] bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded text-amber-400 uppercase tracking-wider">Required</span>
                 </div>
                 <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
-                  Required to publish your clips to TikTok, Instagram Reels, and YouTube Shorts via <strong>Upload-Post</strong>.
-                  Includes a <strong>free tier</strong> (no credit card required).
+                  Wajib untuk mempublikasikan klip Anda ke TikTok, Instagram Reels, and YouTube Shorts via <strong>Upload-Post</strong>.
+                  Termasuk <strong>free tier</strong> (tanpa perlu kartu kredit).
                 </p>
                 <div className="space-y-4">
                   <label className="block text-sm text-zinc-400">Upload-Post API Key</label>
@@ -597,7 +569,7 @@ function App() {
                     </button>
                   </div>
                   <p className="text-xs text-zinc-500 leading-relaxed">
-                    Connect your Upload-Post account to enable one-click publishing.
+                    Hubungkan akun Upload-Post Anda untuk mengaktifkan one-click publishing.
                     <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <a href="https://app.upload-post.com/login" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
                         <span className="text-zinc-400 font-medium">1. Login</span>
@@ -614,7 +586,7 @@ function App() {
                     </div>
                     <br />
                     <span className="text-zinc-600 italic">
-                      Keys are only stored in your browser. They are sent to the backend only to process your request, never stored server-side.
+                      Key hanya disimpan di browser Anda. Hanya dikirim ke backend untuk memproses request, tidak pernah disimpan di server.
                     </span>
                   </p>
                 </div>
@@ -626,24 +598,24 @@ function App() {
                   <span className="text-[10px] bg-white/5 border border-white/5 px-2 py-0.5 rounded text-zinc-500 uppercase tracking-wider">Optional</span>
                 </div>
                 <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
-                  Translate your clips to different languages using <strong>ElevenLabs</strong> AI dubbing.
-                  Automatically translates speech while preserving the original voice characteristics.
+                  Terjemahkan klip Anda ke berbagai bahasa menggunakan <strong>Fish Audio</strong> AI dubbing.
+                  Otomatis menerjemahkan suara sambil mempertahankan karakteristik suara asli.
                 </p>
                 <div className="space-y-4">
-                  <label className="block text-sm text-zinc-400">ElevenLabs API Key</label>
+                  <label className="block text-sm text-zinc-400">Fish Audio API Key</label>
                   <div className="flex gap-2">
                     <input
                       type="password"
-                      value={elevenLabsKey}
-                      onChange={(e) => setElevenLabsKey(e.target.value)}
+                      value={fishAudioKey}
+                      onChange={(e) => setFishAudioKey(e.target.value)}
                       className="input-field"
                       placeholder="sk_..."
                     />
                     <button
                       onClick={() => {
-                        if (elevenLabsKey) {
-                          localStorage.setItem('elevenLabsKey_v1', encrypt(elevenLabsKey));
-                          alert('ElevenLabs API Key saved!');
+                        if (fishAudioKey) {
+                          localStorage.setItem('fishAudioKey_v1', encrypt(fishAudioKey));
+                          alert('Fish Audio API Key saved!');
                         }
                       }}
                       className="btn-primary py-2 px-4 text-sm"
@@ -652,21 +624,66 @@ function App() {
                     </button>
                   </div>
                   <p className="text-xs text-zinc-500 leading-relaxed">
-                    Get your API key from ElevenLabs to enable video translation.
+                    Dapatkan API key dari Fish Audio untuk mengaktifkan terjemahan video.
                     <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <a href="https://elevenlabs.io/sign-up" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
+                      <a href="https://fish.audio" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
                         <span className="text-zinc-400 font-medium">1. Sign Up</span>
                         <span className="text-[10px] text-zinc-600">Create account</span>
                       </a>
-                      <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
+                      <a href="https://fish.audio/app/api-keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
                         <span className="text-zinc-400 font-medium">2. API Key</span>
                         <span className="text-[10px] text-zinc-600">Generate key</span>
                       </a>
                     </div>
                     <br />
                     <span className="text-zinc-600 italic">
-                      Keys are only stored in your browser. They are sent to the backend only to process your request, never stored server-side.
+                      Key hanya disimpan di browser Anda. Hanya dikirim ke backend untuk memproses request, tidak pernah disimpan di server.
                     </span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="glass-panel p-6 mt-8">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold">Local AI Voice (F5-TTS)</h2>
+                  <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded text-blue-400 uppercase tracking-wider">Docker</span>
+                </div>
+                <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
+                  Gunakan server lokal <strong>F5-TTS</strong> (Docker) sebagai pengganti Fish Audio. Kualitas lebih tinggi dan 100% gratis, tapi membutuhkan GPU.
+                </p>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm text-zinc-400 mb-1">F5-TTS Server URL</label>
+                    <input
+                      type="text"
+                      value={f5TtsUrl}
+                      onChange={(e) => setF5TtsUrl(e.target.value)}
+                      className="input-field w-full"
+                      placeholder="http://localhost:8000/api/tts"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-zinc-400 mb-1">Reference Text (opsional)</label>
+                    <input
+                      type="text"
+                      value={f5TtsRefText}
+                      onChange={(e) => setF5TtsRefText(e.target.value)}
+                      className="input-field w-full"
+                      placeholder="Teks yang diucapkan pada audio referensi"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-zinc-400 mb-1">Reference Audio Path (opsional)</label>
+                    <input
+                      type="text"
+                      value={f5TtsRefAudio}
+                      onChange={(e) => setF5TtsRefAudio(e.target.value)}
+                      className="input-field w-full"
+                      placeholder="/path/to/reference.wav (absolut)"
+                    />
+                  </div>
+                  <p className="text-xs text-zinc-600 italic">
+                    Jika F5-TTS Server URL diisi, generator akan menggunakannya dan mengabaikan Fish Audio.
                   </p>
                 </div>
               </div>
@@ -677,8 +694,8 @@ function App() {
                   <span className="text-[10px] bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded text-violet-400 uppercase tracking-wider">New</span>
                 </div>
                 <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
-                  Generate UGC-style videos with AI actors for any product or business using <strong>fal.ai</strong>.
-                  Just describe your product or paste a URL. Requires fal.ai + ElevenLabs API keys.
+                  Buat video ala UGC dengan AI actors untuk produk atau bisnis apa pun menggunakan <strong>fal.ai</strong>.
+                  Cukup deskripsikan produk atau paste URL. Membutuhkan API key fal.ai + Fish Audio.
                 </p>
                 <div className="space-y-4">
                   <label className="block text-sm text-zinc-400">fal.ai API Key</label>
@@ -703,7 +720,7 @@ function App() {
                     </button>
                   </div>
                   <p className="text-xs text-zinc-500 leading-relaxed">
-                    Get your API key from fal.ai to enable AI actor video generation.
+                    Dapatkan API key dari fal.ai untuk mengaktifkan pembuatan video AI actor.
                     <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <a href="https://fal.ai/dashboard/keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
                         <span className="text-zinc-400 font-medium">1. Sign Up</span>
@@ -716,7 +733,7 @@ function App() {
                     </div>
                     <br />
                     <span className="text-zinc-600 italic">
-                      Keys are only stored in your browser. Sent to backend only to process requests.
+                      Key hanya disimpan di browser Anda. Hanya dikirim ke backend untuk memproses request.
                     </span>
                   </p>
                 </div>
@@ -726,123 +743,16 @@ function App() {
 
           {/* View: SaaS Shorts */}
           {activeTab === 'saasshorts' && (
-            <SaaShortsTab geminiApiKey={apiKey} elevenLabsKey={elevenLabsKey} falKey={falKey} uploadPostKey={uploadPostKey} uploadUserId={uploadUserId} />
-          )}
-
-          {/* View: AI Agent */}
-          {activeTab === 'ai-agent' && (
-            <div className="h-full overflow-y-auto custom-scrollbar p-6 md:p-10 animate-[fadeIn_0.3s_ease-out]">
-              <div className="max-w-4xl mx-auto space-y-8">
-
-                {/* Header */}
-                <div className="space-y-3">
-                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[11px] uppercase tracking-wider text-emerald-400 font-semibold">
-                    <Bot size={12} /> Autonomous Skill
-                  </div>
-                  <h1 className="text-3xl md:text-4xl font-black bg-gradient-to-b from-white to-white/60 bg-clip-text text-transparent">
-                    Your Personal Clipping Team
-                  </h1>
-                  <p className="text-zinc-400 text-base md:text-lg leading-relaxed max-w-2xl">
-                    Drop your videos in a folder and a team of AI clippers picks the viral moments, edits them, and queues them for your approval — like having a 24/7 short-form editing crew on autopilot.
-                  </p>
-                </div>
-
-                {/* Mobile-format warning */}
-                <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 flex items-start gap-3">
-                  <Smartphone size={20} className="text-amber-400 shrink-0 mt-0.5" />
-                  <div className="text-sm text-amber-100">
-                    <p className="font-semibold text-amber-300 mb-1">Upload videos already in vertical (9:16) mobile format.</p>
-                    <p className="text-amber-100/80 leading-relaxed">
-                      The agent does not reframe horizontal footage. Make sure every source video is shot or pre-cropped to mobile/portrait format before dropping it into the input folder.
-                    </p>
-                  </div>
-                </div>
-
-                {/* Workflow */}
-                <div className="grid md:grid-cols-3 gap-4">
-                  <div className="glass-panel p-5 space-y-2">
-                    <div className="w-10 h-10 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
-                      <Upload size={18} />
-                    </div>
-                    <h3 className="font-semibold text-white">1. Drop your videos</h3>
-                    <p className="text-xs text-zinc-400 leading-relaxed">
-                      Put your long-form vertical footage in the watched folder. The skill picks one video per run.
-                    </p>
-                  </div>
-
-                  <div className="glass-panel p-5 space-y-2">
-                    <div className="w-10 h-10 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
-                      <Users size={18} />
-                    </div>
-                    <h3 className="font-semibold text-white">2. AI clippers work</h3>
-                    <p className="text-xs text-zinc-400 leading-relaxed">
-                      Whisper transcribes, Gemini 3 Flash spots viral beats, FFmpeg cuts each clip and adds a hook overlay.
-                    </p>
-                  </div>
-
-                  <div className="glass-panel p-5 space-y-2">
-                    <div className="w-10 h-10 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
-                      <CheckCircle2 size={18} />
-                    </div>
-                    <h3 className="font-semibold text-white">3. You validate, it ships</h3>
-                    <p className="text-xs text-zinc-400 leading-relaxed">
-                      Approve the candidates you like and the skill auto-publishes them to TikTok, Reels and YouTube Shorts via Upload-Post.
-                    </p>
-                  </div>
-                </div>
-
-                {/* Repo CTA */}
-                <div className="glass-panel p-6 md:p-8 space-y-5">
-                  <div className="flex items-start justify-between gap-4 flex-wrap">
-                    <div>
-                      <h2 className="text-xl font-bold text-white mb-1">skill-autoshorts</h2>
-                      <p className="text-sm text-zinc-400">
-                        The Claude Code skill that powers this workflow. Install it once and trigger it whenever you want a fresh batch of clips.
-                      </p>
-                    </div>
-                    <a
-                      href="https://github.com/mutonby/skill-autoshorts"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn-primary py-2 px-4 text-sm flex items-center gap-2 shrink-0"
-                    >
-                      View on GitHub <ExternalLink size={14} />
-                    </a>
-                  </div>
-
-                  <div className="bg-[#0c0c0e] border border-white/10 rounded-lg p-4 font-mono text-xs text-zinc-300 flex items-center justify-between gap-3">
-                    <span className="truncate">git clone https://github.com/mutonby/skill-autoshorts</span>
-                    <button
-                      onClick={() => navigator.clipboard.writeText('git clone https://github.com/mutonby/skill-autoshorts')}
-                      className="text-zinc-500 hover:text-white transition-colors shrink-0"
-                      title="Copy"
-                    >
-                      <Copy size={14} />
-                    </button>
-                  </div>
-
-                  <div className="grid sm:grid-cols-2 gap-3 text-sm">
-                    <div className="flex items-start gap-2 text-zinc-300">
-                      <Check size={16} className="text-emerald-400 shrink-0 mt-0.5" />
-                      <span>Daily batch — picks one long video per run</span>
-                    </div>
-                    <div className="flex items-start gap-2 text-zinc-300">
-                      <Check size={16} className="text-emerald-400 shrink-0 mt-0.5" />
-                      <span>Whisper transcription with word-level timing</span>
-                    </div>
-                    <div className="flex items-start gap-2 text-zinc-300">
-                      <Check size={16} className="text-emerald-400 shrink-0 mt-0.5" />
-                      <span>Gemini 3 Flash multimodal moment detection</span>
-                    </div>
-                    <div className="flex items-start gap-2 text-zinc-300">
-                      <Check size={16} className="text-emerald-400 shrink-0 mt-0.5" />
-                      <span>Auto-publish to TikTok, Reels & YouTube Shorts</span>
-                    </div>
-                  </div>
-                </div>
-
-              </div>
-            </div>
+            <SaaShortsTab 
+              geminiApiKey={apiKey} 
+              fishAudioKey={fishAudioKey} 
+              falKey={falKey} 
+              uploadPostKey={uploadPostKey} 
+              uploadUserId={uploadUserId} 
+              f5TtsUrl={f5TtsUrl}
+              f5TtsRefText={f5TtsRefText}
+              f5TtsRefAudio={f5TtsRefAudio}
+            />
           )}
 
           {/* View: UGC Gallery */}
@@ -978,7 +888,7 @@ function App() {
                           uploadPostKey={uploadPostKey}
                           uploadUserId={uploadUserId}
                           geminiApiKey={apiKey}
-                          elevenLabsKey={elevenLabsKey}
+                          fishAudioKey={fishAudioKey}
                           onPlay={(time) => handleClipPlay(time)}
                           onPause={handleClipPause}
                         />
@@ -1011,14 +921,10 @@ function App() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowKeyModal(false)}>
           <div className="bg-[#18181b] border border-white/10 rounded-2xl p-6 max-w-md w-full mx-4 space-y-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-lg font-bold text-white">
-              {!apiKey && !uploadPostKey
-                ? 'Required API Keys Missing'
-                : !apiKey
-                  ? 'Gemini API Key Required'
-                  : 'Upload-Post API Key Required'}
+              Gemini API Key Required
             </h2>
             <p className="text-sm text-zinc-400">
-              OpenShorts needs both a <strong className="text-zinc-200">Gemini</strong> API key and an <strong className="text-zinc-200">Upload-Post</strong> API key. Both have free tiers.
+              LambadaClips needs a <strong className="text-zinc-200">Gemini</strong> API key to generate clips.
             </p>
 
             {/* Gemini block */}
@@ -1049,52 +955,7 @@ function App() {
               )}
             </div>
 
-            {/* Upload-Post block */}
-            <div className={`rounded-lg p-4 space-y-2 border ${!uploadPostKey ? 'bg-violet-500/5 border-violet-500/30' : 'bg-white/5 border-white/10 opacity-70'}`}>
-              <p className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
-                {uploadPostKey ? <Check size={12} className="text-green-400" /> : <AlertTriangle size={12} className="text-amber-400" />}
-                Upload-Post API Key {uploadPostKey && <span className="text-green-400">— set</span>}
-              </p>
-              {!uploadPostKey && (
-                <>
-                  <p className="text-xs text-zinc-400">
-                    Required to publish your clips to TikTok, Instagram Reels, and YouTube Shorts. Free tier available, no credit card needed.
-                  </p>
-                  <ol className="text-xs text-zinc-400 space-y-1 list-decimal list-inside">
-                    <li>Register at <a href="https://app.upload-post.com/login" target="_blank" rel="noopener noreferrer" className="text-violet-400 underline">app.upload-post.com</a></li>
-                    <li>Connect your TikTok, Instagram, or YouTube accounts</li>
-                    <li>Go to <a href="https://app.upload-post.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-violet-400 underline">API Keys</a> and generate one</li>
-                    <li>Paste it below</li>
-                  </ol>
-                  <input
-                    type="text"
-                    placeholder="Paste your Upload-Post API key here..."
-                    className="w-full bg-black/50 border border-white/20 rounded-lg px-4 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-violet-500"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && e.target.value.trim()) {
-                        setUploadPostKey(e.target.value.trim());
-                      }
-                    }}
-                  />
-                </>
-              )}
             </div>
-
-            <div className="flex gap-3">
-              <button
-                onClick={() => setShowKeyModal(false)}
-                className="flex-1 text-sm text-zinc-400 py-2 rounded-lg border border-white/10 hover:bg-white/5 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => { setShowKeyModal(false); setActiveTab('settings'); }}
-                className="flex-1 text-sm text-white py-2 rounded-lg bg-blue-600 hover:bg-blue-500 transition-colors font-medium"
-              >
-                Go to Settings
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

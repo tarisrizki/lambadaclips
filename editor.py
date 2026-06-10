@@ -9,7 +9,7 @@ from google.genai import types
 class VideoEditor:
     def __init__(self, api_key):
         self.client = genai.Client(api_key=api_key)
-        self.model_name = "gemini-3-flash-preview" 
+        self.model_name = "gemini-2.5-flash" 
 
     def upload_video(self, video_path):
         """Uploads video to Gemini File API."""

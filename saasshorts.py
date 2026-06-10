@@ -22,22 +22,32 @@ from urllib.parse import urljoin
 from typing import Optional, List, Dict, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import time
+def generate_with_retry(client, **kwargs):
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(**kwargs)
+        except Exception as e:
+            if '429' in str(e) or 'RESOURCE_EXHAUSTED' in str(e) or 'quota' in str(e).lower():
+                if attempt < max_retries - 1:
+                    print(f"[SaaSShorts] ⚠️ Rate limit hit (429). Retrying in 20 seconds (Attempt {attempt+1}/{max_retries})...")
+                    time.sleep(20)
+                else:
+                    raise e
+            else:
+                raise e
+
+
 
 ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1"
 FAL_QUEUE_BASE = "https://queue.fal.run"
 
 # Default ElevenLabs voices (name → voice_id)
-DEFAULT_VOICES = {
-    "Rachel (Female, calm)": "21m00Tcm4TlvDq8ikWAM",
-    "Drew (Male, confident)": "29vD33N1CtxCmqQRPOHJ",
-    "Bella (Female, soft)": "EXAVITQu4vr4xnSDxMaL",
-    "Antoni (Male, warm)": "ErXwobaYiN019PkySvjV",
-    "Josh (Male, deep)": "TxGEqnHWrfWFTfGW9XjX",
-    "Sam (Male, raspy)": "yoZ06aMxZJJ28mfd3POQ",
-}
+DEFAULT_VOICES = {}
 
 
-GEMINI_MODEL = "gemini-3-flash-preview"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -100,7 +110,7 @@ Return a comprehensive JSON research report:
 
 Be thorough. Use REAL data from your search results, not made-up information."""
 
-    response = client.models.generate_content(
+    response = generate_with_retry(client, 
         model=GEMINI_MODEL,
         contents=[prompt],
         config=types.GenerateContentConfig(
@@ -332,7 +342,7 @@ Return a JSON object:
 IMPORTANT: Use REAL pain points from user reviews when available. Real frustrations make the best UGC content.
 Include 5-8 pain points, 4-6 emotional hooks, and 4+ viral angles."""
 
-    response = client.models.generate_content(
+    response = generate_with_retry(client, 
         model=GEMINI_MODEL,
         contents=[prompt],
         config=types.GenerateContentConfig(response_mime_type="application/json"),
@@ -377,9 +387,6 @@ def generate_scripts(
     from google import genai
     from google.genai import types
 
-    lang_name = "Spanish" if language == "es" else "English"
-    print(f"[SaaSShorts] 📝 Generating {num_scripts} scripts ({style}, {lang_name})...")
-
     client = genai.Client(api_key=gemini_key)
 
     style_guide = {
@@ -390,14 +397,22 @@ def generate_scripts(
         "comparison": "Before/after comparison.",
     }
 
-    lang_instructions = ""
     if language == "es":
+        lang_name = "Spanish"
         lang_instructions = """
 LANGUAGE: ALL narrations, subtitles, captions, and hashtags MUST be in SPANISH (Spain/Latin America).
 Use natural casual Spanish like a real person would speak on TikTok. Contractions, slang OK.
 Examples of Spanish UGC hooks: "Tío, no me puedo creer que nadie me haya dicho esto antes...", "Si usas Excel para esto, necesitas ver esto YA", "Os voy a enseñar algo que me ha cambiado la vida..."
 """
+    elif language == "id":
+        lang_name = "Indonesian"
+        lang_instructions = """
+LANGUAGE: ALL narrations, subtitles, captions, and hashtags MUST be in INDONESIAN (Bahasa Indonesia).
+Use natural casual Indonesian like a real person would speak on TikTok/Instagram Reels. Use common slang, relatable phrases, and casual tone (e.g., pake, banget, bikin, udahan).
+Examples of Indonesian UGC hooks: "Sumpah kalian harus tau trik ini...", "Stop ngelakuin ini manual, ada cara yang lebih gampang!", "Kenapa baru tau sekarang sih ada fitur ini..."
+"""
     else:
+        lang_name = "English"
         lang_instructions = """
 LANGUAGE: ALL narrations, subtitles, captions, and hashtags MUST be in ENGLISH.
 Use natural casual American English like a real person on TikTok. Contractions, slang OK.
@@ -514,7 +529,7 @@ RULES:
 - Example female: "a 26 year old attractive european woman, light brown wavy hair, wearing a white tank top, natural minimal makeup, friendly face"
 - Example male: "a 29 year old european man, short dark hair, light stubble, wearing a navy t-shirt, smart casual look" """
 
-    response = client.models.generate_content(
+    response = generate_with_retry(client, 
         model=GEMINI_MODEL,
         contents=[prompt],
         config=types.GenerateContentConfig(
@@ -756,35 +771,58 @@ def generate_actor_image(
 
 def generate_voiceover(
     text: str,
-    elevenlabs_key: str,
+    fishaudio_key: str,
     output_path: str,
-    voice_id: str = "21m00Tcm4TlvDq8ikWAM",
+    voice_id: str = "",
+    f5tts_url: str = "",
+    f5tts_ref_text: str = "",
+    f5tts_ref_audio: str = "",
 ) -> str:
-    """Generate voiceover audio using ElevenLabs TTS."""
-    print(f"[SaaSShorts] 🎙️ Generating voiceover ({len(text)} chars)...")
+    """Generate voiceover audio using F5-TTS or Fish Audio TTS."""
+    if f5tts_url:
+        print(f"[SaaSShorts] 🎙️ Generating voiceover ({len(text)} chars) with F5-TTS...")
+        data = {
+            "text": text,
+            "ref_text": f5tts_ref_text,
+        }
+        files = {}
+        if f5tts_ref_audio and os.path.exists(f5tts_ref_audio):
+            files["ref_audio"] = open(f5tts_ref_audio, "rb")
+            
+        try:
+            with httpx.Client(timeout=300.0) as client:
+                resp = client.post(f5tts_url, data=data, files=files if files else None)
+                if resp.status_code != 200:
+                    raise Exception(f"F5-TTS error ({resp.status_code}): {resp.text}")
+                with open(output_path, "wb") as f:
+                    f.write(resp.content)
+            print(f"[SaaSShorts] ✅ Voiceover (F5-TTS): {output_path}")
+            return output_path
+        finally:
+            if "ref_audio" in files:
+                files["ref_audio"].close()
 
-    url = f"{ELEVENLABS_API_BASE}/text-to-speech/{voice_id}"
+    print(f"[SaaSShorts] 🎙️ Generating voiceover ({len(text)} chars) with Fish Audio...")
+
+    url = "https://api.fish.audio/v1/tts"
 
     headers = {
-        "xi-api-key": elevenlabs_key,
+        "Authorization": f"Bearer {fishaudio_key}",
         "Content-Type": "application/json",
     }
 
     body = {
         "text": text,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.75,
-            "style": 0.4,
-            "use_speaker_boost": True,
-        },
+        "format": "mp3"
     }
+    
+    if voice_id:
+        body["reference_id"] = voice_id
 
     with httpx.Client(timeout=120.0) as client:
         resp = client.post(url, headers=headers, json=body)
         if resp.status_code != 200:
-            raise Exception(f"ElevenLabs TTS error ({resp.status_code}): {resp.text}")
+            raise Exception(f"Fish Audio TTS error ({resp.status_code}): {resp.text}")
 
         with open(output_path, "wb") as f:
             f.write(resp.content)
@@ -793,25 +831,32 @@ def generate_voiceover(
     return output_path
 
 
-def get_elevenlabs_voices(elevenlabs_key: str) -> list:
-    """Fetch available voices from ElevenLabs."""
-    url = f"{ELEVENLABS_API_BASE}/voices"
-    headers = {"xi-api-key": elevenlabs_key}
+def get_fishaudio_voices(fishaudio_key: str) -> list:
+    """Fetch available voices from Fish Audio."""
+    url = "https://api.fish.audio/model?page_size=30&page_number=1"
+    headers = {"Authorization": f"Bearer {fishaudio_key}"}
 
     with httpx.Client(timeout=15.0) as client:
-        resp = client.get(url, headers=headers)
-        if resp.status_code != 200:
+        try:
+            resp = client.get(url, headers=headers)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+        except Exception:
             return []
-        data = resp.json()
 
     voices = []
-    for v in data.get("voices", []):
+    items = data.get("items", []) if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        items = []
+
+    for v in items:
         voices.append({
-            "voice_id": v["voice_id"],
-            "name": v["name"],
-            "category": v.get("category", ""),
-            "labels": v.get("labels", {}),
-            "preview_url": v.get("preview_url", ""),
+            "voice_id": v.get("_id", v.get("id", "")),
+            "name": v.get("title", v.get("name", "Unknown Voice")),
+            "category": "Fish Audio",
+            "labels": {},
+            "preview_url": "",
         })
 
     return voices
@@ -1300,7 +1345,7 @@ def generate_full_video(
         script: A single script object from generate_scripts()
         config: {
             "fal_key": str,
-            "elevenlabs_key": str,
+            "fishaudio_key": str,
             "voice_id": str (optional),
             "actor_description": str (optional, overrides script),
         }
@@ -1313,7 +1358,7 @@ def generate_full_video(
     os.makedirs(output_dir, exist_ok=True)
 
     fal_key = config["fal_key"]
-    elevenlabs_key = config["elevenlabs_key"]
+    fishaudio_key = config["fishaudio_key"]
     voice_id = config.get("voice_id", "21m00Tcm4TlvDq8ikWAM")
     actor_desc = config.get("actor_description") or script.get("actor_description", "a young professional in their late 20s, wearing a casual modern outfit, clean background")
 
@@ -1357,7 +1402,14 @@ def generate_full_video(
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_img = executor.submit(generate_actor_image, actor_desc, fal_key, actor_img) if need_img else None
             future_voice = executor.submit(
-                generate_voiceover, full_narration, elevenlabs_key, audio_path, voice_id
+                generate_voiceover, 
+                full_narration, 
+                fishaudio_key, 
+                audio_path, 
+                voice_id,
+                config.get("f5tts_url", ""),
+                config.get("f5tts_ref_text", ""),
+                config.get("f5tts_ref_audio", "")
             ) if need_voice else None
 
             if future_img:

@@ -103,8 +103,10 @@ const SubtitleBlock: React.FC<SubtitleBlockProps> = ({
           display: "flex",
           flexWrap: "wrap",
           justifyContent: "center",
-          gap: "6px 8px",
-          maxWidth: "85%",
+          gap: "24px 32px",
+          lineHeight: "1.8",
+          maxWidth: "90%",
+          padding: "20px",
           ...bgStyle,
         }}
       >
@@ -169,7 +171,7 @@ const WordSpan: React.FC<WordSpanProps> = ({
           config: { mass: 0.5, stiffness: 300, damping: 12 },
           durationInFrames: 10,
         });
-        const scaleValue = interpolate(scale, [0, 1], [1, 1.25]);
+        const scaleValue = interpolate(scale, [0, 1], [1, 1.15]);
         transform = `scale(${scaleValue})`;
         break;
       }
@@ -221,7 +223,7 @@ const WordSpan: React.FC<WordSpanProps> = ({
         ...extraStyle,
       }}
     >
-      {word}
+      {word.trim()}
     </span>
   );
 };

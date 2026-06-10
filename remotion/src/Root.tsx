@@ -40,7 +40,7 @@ const DEFAULT_PROPS: ShortVideoProps = {
     },
   },
   hook: {
-    text: "POV: You just discovered OpenShorts",
+    text: "POV: You just discovered LambadaClips",
     position: "top",
     size: "M",
     entranceAnimation: "spring",

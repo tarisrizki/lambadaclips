@@ -172,7 +172,11 @@ app = FastAPI(lifespan=lifespan)
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "*",
+        "https://clips.lambada.my.id",
+        "http://clips.lambada.my.id",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -324,20 +328,8 @@ async def process_endpoint(
     if not api_key:
         raise HTTPException(status_code=400, detail="Missing X-Gemini-Key header")
 
-    ack_flag = str(acknowledged).lower() in ("1", "true", "yes")
-
-    # Handle JSON body manually for URL payload
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        body = await request.json()
-        url = body.get("url")
-        ack_flag = bool(body.get("acknowledged"))
-
     if not url and not file:
         raise HTTPException(status_code=400, detail="Must provide URL or File")
-
-    if not ack_flag:
-        raise HTTPException(status_code=400, detail="You must confirm you own the content or have rights to process it.")
 
     if url and DISABLE_YOUTUBE_URL:
         raise HTTPException(status_code=403, detail="YouTube URL ingest is disabled on this deployment. Please upload a file you own.")
@@ -450,13 +442,13 @@ async def edit_clip(
         # Resolve Input Path: Prefer explict input_filename from frontend (chaining edits)
         if req.input_filename:
             # Security: Ensure just a filename, no paths
-            safe_name = os.path.basename(req.input_filename)
+            safe_name = os.path.basename(req.input_filename).split('?')[0]
             input_path = os.path.join(OUTPUT_DIR, req.job_id, safe_name)
             filename = safe_name
         else:
             # Fallback to original clip
             clip = job['result']['clips'][req.clip_index]
-            filename = clip['video_url'].split('/')[-1]
+            filename = clip['video_url'].split('/')[-1].split('?')[0]
             input_path = os.path.join(OUTPUT_DIR, req.job_id, filename)
         
         if not os.path.exists(input_path):
@@ -563,6 +555,105 @@ class SubtitleRequest(BaseModel):
     bg_color: str = "#000000"
     bg_opacity: float = 0.0
     input_filename: Optional[str] = None
+
+class EnhanceRequest(BaseModel):
+    job_id: str
+    clip_index: int
+
+class EnhanceResponse(BaseModel):
+    enhance_id: str
+    status: str
+
+# Stores enhance jobs in memory (enhance_id -> status, error, clip_url)
+enhance_jobs = {}
+
+@app.post("/api/enhance", response_model=EnhanceResponse)
+async def enhance_clip(req: EnhanceRequest):
+    """
+    Enhances a specific clip to FullHD (1080x1920) and overwrites the original clip file.
+    """
+    if req.job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    job = jobs[req.job_id]
+    output_dir = job.get('output_dir')
+    if not output_dir or not os.path.exists(output_dir):
+        raise HTTPException(status_code=404, detail="Job output directory not found")
+        
+    json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
+    if not json_files:
+        raise HTTPException(status_code=404, detail="Metadata not found")
+        
+    target_json = json_files[0]
+    with open(target_json, 'r') as f:
+        data = json.load(f)
+        
+    clips = data.get('shorts', [])
+    if req.clip_index < 0 or req.clip_index >= len(clips):
+        raise HTTPException(status_code=400, detail="Invalid clip index")
+        
+    clip = clips[req.clip_index]
+    original_video = data.get('original_video')
+    
+    # Fallback to guessing the original video if not in metadata
+    if not original_video or not os.path.exists(original_video):
+        # Try to find a video file in the output dir that is not a clip
+        all_videos = glob.glob(os.path.join(output_dir, "*.mp4")) + glob.glob(os.path.join(output_dir, "*.webm"))
+        original_video = None
+        for v in all_videos:
+            if "_clip_" not in v and "_vertical" not in v and "_fullhd" not in v:
+                original_video = v
+                break
+                
+    if not original_video or not os.path.exists(original_video):
+        raise HTTPException(status_code=404, detail="Original video not found, cannot enhance")
+
+    base_name = os.path.basename(target_json).replace('_metadata.json', '')
+    clip_filename = f"{base_name}_clip_{req.clip_index+1}.mp4"
+    clip_path = os.path.join(output_dir, clip_filename)
+    
+    enhance_id = str(uuid.uuid4())
+    enhance_jobs[enhance_id] = {'status': 'processing'}
+    
+    # Run in background
+    def run_enhance():
+        try:
+            print(f"🚀 Starting enhance for job {req.job_id} clip {req.clip_index}")
+            cmd = [
+                'python', 'main.py', 
+                '--enhance', 
+                '--start', str(clip['start']), 
+                '--end', str(clip['end']),
+                '-i', original_video,
+                '-o', clip_path  # overwrite the existing draft clip
+            ]
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = process.communicate()
+            
+            if process.returncode == 0:
+                # To bypass browser cache on the frontend, we could append a query param, 
+                # but the URL itself doesn't change here. The frontend will handle cache busting.
+                enhance_jobs[enhance_id]['status'] = 'completed'
+                enhance_jobs[enhance_id]['clip_url'] = f"/videos/{req.job_id}/{clip_filename}"
+            else:
+                enhance_jobs[enhance_id]['status'] = 'failed'
+                enhance_jobs[enhance_id]['error'] = stderr.decode('utf-8', errors='replace')
+                print(f"❌ Enhance failed: {stderr.decode('utf-8', errors='replace')}")
+        except Exception as e:
+            enhance_jobs[enhance_id]['status'] = 'failed'
+            enhance_jobs[enhance_id]['error'] = str(e)
+            print(f"❌ Enhance exception: {e}")
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, run_enhance)
+    
+    return EnhanceResponse(enhance_id=enhance_id, status="processing")
+
+@app.get("/api/enhance/status/{enhance_id}")
+async def get_enhance_status(enhance_id: str):
+    if enhance_id not in enhance_jobs:
+        raise HTTPException(status_code=404, detail="Enhance job not found")
+    return enhance_jobs[enhance_id]
 
 
 @app.get("/api/clip/{job_id}/{clip_index}/transcript")
@@ -779,11 +870,9 @@ async def add_subtitles(req: SubtitleRequest):
     
     # Video Path
     if req.input_filename:
-        # Use chained file
-        filename = os.path.basename(req.input_filename)
+        filename = os.path.basename(req.input_filename).split('?')[0]
     else:
-        # Fallback to standard naming
-        filename = clip_data.get('video_url', '').split('/')[-1]
+        filename = clip_data.get('video_url', '').split('/')[-1].split('?')[0]
         if not filename:
              base_name = os.path.basename(json_files[0]).replace('_metadata.json', '')
              filename = f"{base_name}_clip_{req.clip_index+1}.mp4"
@@ -893,9 +982,9 @@ async def add_hook(req: HookRequest):
     
     # Video Path
     if req.input_filename:
-        filename = os.path.basename(req.input_filename)
+        filename = os.path.basename(req.input_filename).split('?')[0]
     else:
-        filename = clip_data.get('video_url', '').split('/')[-1]
+        filename = clip_data.get('video_url', '').split('/')[-1].split('?')[0]
         if not filename:
              base_name = os.path.basename(json_files[0]).replace('_metadata.json', '')
              filename = f"{base_name}_clip_{req.clip_index+1}.mp4"
@@ -960,11 +1049,11 @@ async def get_languages():
 @app.post("/api/translate")
 async def translate_clip(
     req: TranslateRequest,
-    x_elevenlabs_key: Optional[str] = Header(None, alias="X-ElevenLabs-Key")
+    x_fishaudio_key: Optional[str] = Header(None, alias="X-FishAudio-Key")
 ):
-    """Translate a video clip to a different language using ElevenLabs dubbing."""
-    if not x_elevenlabs_key:
-        raise HTTPException(status_code=400, detail="Missing X-ElevenLabs-Key header")
+    """Translate a video clip to a different language using Fish Audio dubbing."""
+    if not x_fishaudio_key:
+        raise HTTPException(status_code=400, detail="Missing X-FishAudio-Key header")
 
     if req.job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -987,9 +1076,9 @@ async def translate_clip(
 
     # Video Path
     if req.input_filename:
-        filename = os.path.basename(req.input_filename)
+        filename = os.path.basename(req.input_filename).split('?')[0]
     else:
-        filename = clip_data.get('video_url', '').split('/')[-1]
+        filename = clip_data.get('video_url', '').split('/')[-1].split('?')[0]
         if not filename:
              base_name = os.path.basename(json_files[0]).replace('_metadata.json', '')
              filename = f"{base_name}_clip_{req.clip_index+1}.mp4"
@@ -1010,7 +1099,7 @@ async def translate_clip(
                 video_path=input_path,
                 output_path=output_path,
                 target_language=req.target_language,
-                api_key=x_elevenlabs_key,
+                api_key=x_fishaudio_key,
                 source_language=req.source_language,
             )
 
@@ -1650,7 +1739,7 @@ from saasshorts import (
     generate_scripts,
     generate_full_video,
     generate_actor_images,
-    get_elevenlabs_voices,
+    get_fishaudio_voices,
     DEFAULT_VOICES,
 )
 
@@ -1930,7 +2019,7 @@ async def gallery_html_page():
           </div>
         </a>'''
 
-        ld_items.append(f'{{"@type":"ListItem","position":{i+1},"url":"https://openshorts.app/video/{video_id}","name":"{title}"}}')
+        ld_items.append(f'{{"@type":"ListItem","position":{i+1},"url":"https://lambadaclips.app/video/{video_id}","name":"{title}"}}')
 
     ld_json = f'{{"@context":"https://schema.org","@type":"CollectionPage","name":"AI UGC Video Gallery","mainEntity":{{"@type":"ItemList","numberOfItems":{len(videos)},"itemListElement":[{",".join(ld_items)}]}}}}'
 
@@ -1938,10 +2027,10 @@ async def gallery_html_page():
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI UGC Video Gallery | OpenShorts</title>
+<title>AI UGC Video Gallery | LambadaClips</title>
 <meta name="description" content="Browse {len(videos)} AI-generated UGC marketing videos. Create viral TikTok and Instagram Reels for your SaaS product.">
 <meta name="robots" content="index, follow">
-<meta property="og:title" content="AI UGC Video Gallery | OpenShorts">
+<meta property="og:title" content="AI UGC Video Gallery | LambadaClips">
 <meta property="og:type" content="website">
 <meta property="og:description" content="Browse AI-generated UGC marketing videos for SaaS products.">
 <script type="application/ld+json">{ld_json}</script>
@@ -1956,7 +2045,7 @@ h1{{font-size:28px;font-weight:700;padding:40px 20px 0;text-align:center}}
 </style>
 </head>
 <body>
-<nav><strong style="font-size:18px">OpenShorts</strong><a href="/" class="cta">Create Your Video</a></nav>
+<nav><strong style="font-size:18px">LambadaClips</strong><a href="/" class="cta">Create Your Video</a></nav>
 <h1>AI-Generated UGC Videos</h1>
 <p class="subtitle">{len(videos)} videos generated · Low Cost & Premium modes</p>
 <div class="grid">{cards_html}</div>
@@ -1997,7 +2086,7 @@ async def video_html_page(video_id: str):
 <html lang="{language}">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title} - AI UGC Video | OpenShorts</title>
+<title>{title} - AI UGC Video | LambadaClips</title>
 <meta name="description" content="{caption} {hashtags}">
 <meta property="og:type" content="video.other">
 <meta property="og:title" content="{title}">
@@ -2029,7 +2118,7 @@ h1{{font-size:22px;font-weight:700;margin-bottom:8px}}
 </style>
 </head>
 <body>
-<nav><strong>OpenShorts</strong><a href="/gallery">Gallery</a><span style="color:#3f3f46">›</span><span style="color:#e4e4e7;font-size:14px">{title}</span></nav>
+<nav><strong>LambadaClips</strong><a href="/gallery">Gallery</a><span style="color:#3f3f46">›</span><span style="color:#e4e4e7;font-size:14px">{title}</span></nav>
 <div class="container">
 <div><video src="{video_url}" poster="{actor_url}" controls autoplay playsinline style="aspect-ratio:9/16;object-fit:cover"></video></div>
 <div>
@@ -2064,22 +2153,25 @@ class SaaSGenerateRequest(BaseModel):
     selected_actor_url: Optional[str] = None  # Pre-selected actor image URL
     retry_job_id: Optional[str] = None
     video_mode: str = "lowcost"  # "lowcost" or "premium"
+    f5tts_url: Optional[str] = None
+    f5tts_ref_text: Optional[str] = None
+    f5tts_ref_audio: Optional[str] = None
 
 
 @app.post("/api/saasshorts/generate")
 async def saasshorts_generate(
     req: SaaSGenerateRequest,
     x_fal_key: Optional[str] = Header(None, alias="X-Fal-Key"),
-    x_elevenlabs_key: Optional[str] = Header(None, alias="X-ElevenLabs-Key"),
+    x_fishaudio_key: Optional[str] = Header(None, alias="X-FishAudio-Key"),
 ):
     """Generate a SaaS UGC video from a script. Returns a job_id for polling."""
     fal_key = x_fal_key
-    elevenlabs_key = x_elevenlabs_key
+    fishaudio_key = x_fishaudio_key
 
     if not fal_key:
         raise HTTPException(status_code=400, detail="Missing fal.ai API Key (X-Fal-Key header)")
-    if not elevenlabs_key:
-        raise HTTPException(status_code=400, detail="Missing ElevenLabs API Key (X-ElevenLabs-Key header)")
+    if not fishaudio_key and not req.f5tts_url:
+        raise HTTPException(status_code=400, detail="Missing Fish Audio API Key or F5-TTS URL")
 
     # Support retry: reuse output_dir so cached assets (image, voice, head, broll) are kept
     reused = False
@@ -2139,11 +2231,14 @@ async def saasshorts_generate(
 
     config = {
         "fal_key": fal_key,
-        "elevenlabs_key": elevenlabs_key,
+        "fishaudio_key": fishaudio_key,
         "voice_id": req.voice_id or "21m00Tcm4TlvDq8ikWAM",
         "actor_description": req.actor_description,
         "selected_actor_path": selected_actor_path,
         "video_mode": req.video_mode,
+        "f5tts_url": req.f5tts_url,
+        "f5tts_ref_text": req.f5tts_ref_text,
+        "f5tts_ref_audio": req.f5tts_ref_audio,
     }
 
     async def run_generation():
@@ -2232,17 +2327,17 @@ async def saasshorts_status(job_id: str):
 
 @app.get("/api/saasshorts/voices")
 async def saasshorts_voices(
-    x_elevenlabs_key: Optional[str] = Header(None, alias="X-ElevenLabs-Key"),
+    x_fishaudio_key: Optional[str] = Header(None, alias="X-FishAudio-Key"),
 ):
-    """List available ElevenLabs voices."""
-    if x_elevenlabs_key:
+    """List available Fish Audio voices."""
+    if x_fishaudio_key:
         try:
             loop = asyncio.get_event_loop()
             voices = await loop.run_in_executor(
-                None, get_elevenlabs_voices, x_elevenlabs_key
+                None, get_fishaudio_voices, x_fishaudio_key
             )
             if voices:
-                return {"voices": voices, "source": "elevenlabs"}
+                return {"voices": voices, "source": "fishaudio"}
         except Exception:
             pass
 

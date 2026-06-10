@@ -2,7 +2,7 @@ import React from 'react';
 import { ArrowLeft } from 'lucide-react';
 
 const LAST_UPDATED = '2026-05-06';
-const ISSUES_URL = 'https://github.com/mutonby/openshorts/issues';
+const ISSUES_URL = 'https://github.com/lambadaclips/lambadaclips/issues';
 
 function Section({ title, children }) {
     return (
@@ -37,7 +37,7 @@ export default function Legal() {
 
                 <Section title="The short version">
                     <p>
-                        OpenShorts is a free, open-source AI clip generator. There are no accounts, no payments, and we
+                        LambadaClips is a free, open-source AI clip generator. There are no accounts, no payments, and we
                         do not persistently store the videos you upload or the clips we generate. By using the Service
                         you agree to the points below.
                     </p>
@@ -64,7 +64,7 @@ export default function Legal() {
                     </ul>
                     <p>
                         If you submit content you do not have rights to, that is your responsibility, not ours. You
-                        agree to indemnify OpenShorts and its contributors against any third-party claim arising from
+                        agree to indemnify LambadaClips and its contributors against any third-party claim arising from
                         content you submitted.
                     </p>
                 </Section>
@@ -85,7 +85,7 @@ export default function Legal() {
                             for debugging and abuse prevention.
                         </li>
                         <li>
-                            <strong className="text-white">API keys (Gemini, ElevenLabs, Upload-Post):</strong> stored
+                            <strong className="text-white">API keys (Gemini, Fish Audio, Upload-Post):</strong> stored
                             encrypted in your browser's <code className="text-zinc-200">localStorage</code>. They are
                             sent as request headers when a feature needs them, used to call the relevant third party,
                             and never written to our database or disk.
@@ -96,8 +96,8 @@ export default function Legal() {
 
                 <Section title="Third-party APIs">
                     <p>
-                        When you use a feature that requires it, OpenShorts forwards relevant data to the third-party
-                        API for which you provided a key — Google Gemini (AI analysis), ElevenLabs (optional dubbing),
+                        When you use a feature that requires it, LambadaClips forwards relevant data to the third-party
+                        API for which you provided a key — Google Gemini (AI analysis), Fish Audio (optional dubbing),
                         Upload-Post (optional social posting). Those services have their own terms and privacy policies
                         which apply in addition to this notice.
                     </p>
@@ -135,7 +135,7 @@ export default function Legal() {
 
                 <Section title="Self-hosted instances">
                     <p>
-                        OpenShorts is open source and may be self-hosted. This notice applies only to the hosted
+                        LambadaClips is open source and may be self-hosted. This notice applies only to the hosted
                         version we operate. Self-hosted instances are operated by their respective administrators, and
                         their data handling, retention, and policies are their responsibility, not ours.
                     </p>
