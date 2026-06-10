@@ -1,6 +1,6 @@
 services:
   f5tts:
-    build: .
+    image: ghcr.io/tarisrizki/lambadaclips-f5tts:latest
     container_name: f5tts_server
     ports:
       - "8000:8000"

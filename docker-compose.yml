@@ -1,6 +1,6 @@
 services:
   backend:
-    build: .
+    image: ghcr.io/tarisrizki/lambadaclips-backend:latest
     container_name: lambadaclips-backend
     ports:
       - "8001:8000"
@@ -12,9 +12,7 @@ services:
 
 
   renderer:
-    build:
-      context: .
-      dockerfile: render-service/Dockerfile
+    image: ghcr.io/tarisrizki/lambadaclips-renderer:latest
     container_name: lambadaclips-renderer
     ports:
       - "3100:3100"
