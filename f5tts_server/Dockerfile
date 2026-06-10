@@ -8,9 +8,10 @@ WORKDIR /workspace
 RUN git clone https://github.com/SWivid/F5-TTS.git
 WORKDIR /workspace/F5-TTS
 
-# Install dependencies
-RUN pip install -e .
-RUN pip install fastapi uvicorn python-multipart huggingface_hub
+# Install dependencies without reinstalling torch
+RUN grep -rl "torch" . | xargs sed -i '/torch/d' || true
+RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir fastapi uvicorn python-multipart huggingface_hub
 
 # Download the model weights
 RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='Eempostor/F5-TTS-INDO-FINETUNE-V2', filename='f5_tts_indo_v2.pt', local_dir='/workspace/model')"
