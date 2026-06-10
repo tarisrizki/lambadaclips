@@ -907,19 +907,76 @@ def generate_talking_head(
     return output_path
 
 
+def _liveportrait_hf_run(image_path: str, audio_path: str, hf_token: str, output_path: str) -> str:
+    print(f"[SaaSShorts] 🗣️ Generating LivePortrait via Hugging Face Spaces (Zero-GPU)...")
+    from gradio_client import Client, handle_file
+    import shutil
+    
+    # Connect to the Hugging Face Space
+    client = Client("KlingTeam/LivePortrait", hf_token=hf_token)
+    result = client.predict(
+        image_path=handle_file(image_path),
+        audio_path=handle_file(audio_path),
+        api_name="/predict"
+    )
+    
+    shutil.copy(result, output_path)
+    return output_path
+
+def _liveportrait_colab_run(image_path: str, audio_path: str, colab_url: str, output_path: str) -> str:
+    print(f"[SaaSShorts] 🗣️ Generating LivePortrait via Google Colab Backup...")
+    import httpx
+    with open(image_path, "rb") as f_img, open(audio_path, "rb") as f_aud:
+        files = {
+            "image": ("image.png", f_img, "image/png"),
+            "audio": ("audio.wav", f_aud, "audio/wav")
+        }
+        with httpx.Client(timeout=600.0) as client:
+            resp = client.post(f"{colab_url.rstrip('/')}/predict", files=files)
+            if resp.status_code != 200:
+                raise Exception(f"Colab LivePortrait failed [{resp.status_code}]: {resp.text}")
+            with open(output_path, "wb") as out_f:
+                out_f.write(resp.content)
+    return output_path
+
 def generate_talking_head_lowcost(
     image_path: str,
     audio_path: str,
-    fal_key: str,
+    config: dict,
     output_path: str,
 ) -> str:
     """
-    Low-cost talking head: Hailuo 2.3 Fast img2video → VEED Lipsync.
-    ~$0.39 vs ~$1.69 for Kling Avatar v2.
+    Low-cost talking head: LivePortrait (HF/Colab) -> fallback to Hailuo+VEED.
     """
-    print(f"[SaaSShorts] 🗣️ Generating talking head (Low Cost: Hailuo + VEED Lipsync)...")
+    hf_token = config.get("hf_token")
+    colab_url = config.get("colab_url")
+    fal_key = config.get("fal_key")
 
-    # Step 1: Generate 6s video from image using MiniMax Hailuo 2.3 Fast ($0.19)
+    print(f"[SaaSShorts] 🗣️ Generating talking head...")
+
+    # 1. Try Hugging Face Zero-GPU (Primary)
+    if hf_token:
+        try:
+            _liveportrait_hf_run(image_path, audio_path, hf_token, output_path)
+            print(f"[SaaSShorts] ✅ Talking head (HF): {output_path}")
+            return output_path
+        except Exception as e:
+            print(f"[SaaSShorts] ⚠️ HF LivePortrait failed: {e}. Falling back...")
+
+    # 2. Try Colab (Fallback)
+    if colab_url:
+        try:
+            _liveportrait_colab_run(image_path, audio_path, colab_url, output_path)
+            print(f"[SaaSShorts] ✅ Talking head (Colab): {output_path}")
+            return output_path
+        except Exception as e:
+            print(f"[SaaSShorts] ⚠️ Colab LivePortrait failed: {e}. Falling back...")
+
+    # 3. Try Fal.ai Hailuo+Veed (Last Resort)
+    if not fal_key:
+        raise Exception("LivePortrait (HF/Colab) failed and no fal.ai key provided for fallback.")
+    
+    print(f"[SaaSShorts] 🗣️ Falling back to Hailuo 2.3 Fast img2video → VEED Lipsync...")
     # Cache the Hailuo clip so retries don't re-generate it
     hailuo_cache_path = output_path.replace(".mp4", "_hailuo_cache.mp4")
 
@@ -1427,7 +1484,7 @@ def generate_full_video(
     if not _exists(talking_head):
         if video_mode == "lowcost":
             log("[3/6] Generating talking head (Low Cost: Hailuo + VEED Lipsync)... This takes 2-5 minutes.")
-            talking_head = generate_talking_head_lowcost(actor_img, audio_path, fal_key, talking_head)
+            talking_head = generate_talking_head_lowcost(actor_img, audio_path, config, talking_head)
         else:
             log("[3/6] Generating talking head video (Kling Avatar v2)... This takes 2-5 minutes.")
             talking_head = generate_talking_head(actor_img, audio_path, fal_key, talking_head)

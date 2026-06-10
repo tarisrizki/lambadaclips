@@ -155,6 +155,14 @@ function App() {
   const [f5TtsRefText, setF5TtsRefText] = useState(() => localStorage.getItem('f5TtsRefText_v1') || '');
   const [f5TtsRefAudio, setF5TtsRefAudio] = useState(() => localStorage.getItem('f5TtsRefAudio_v1') || '');
 
+  // LivePortrait State
+  const [hfToken, setHfToken] = useState(() => {
+    const stored = localStorage.getItem('hfToken_v1');
+    if (stored) return decrypt(stored);
+    return '';
+  });
+  const [colabUrl, setColabUrl] = useState(() => localStorage.getItem('colabUrl_v1') || '');
+
   // Auto-save API keys
   useEffect(() => {
     if (apiKey) localStorage.setItem('gemini_key', apiKey);
@@ -278,6 +286,16 @@ function App() {
       localStorage.setItem('falKey_v1', encrypt(falKey));
     }
   }, [falKey]);
+
+  useEffect(() => {
+    if (hfToken) {
+      localStorage.setItem('hfToken_v1', encrypt(hfToken));
+    }
+  }, [hfToken]);
+
+  useEffect(() => {
+    localStorage.setItem('colabUrl_v1', colabUrl);
+  }, [colabUrl]);
 
   useEffect(() => {
     if (uploadPostKey && userProfiles.length === 0) {
@@ -738,6 +756,54 @@ function App() {
                   </p>
                 </div>
               </div>
+
+              <div className="glass-panel p-6 mt-8">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold">LivePortrait (Gratis/Open Source)</h2>
+                  <span className="text-[10px] bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded text-green-400 uppercase tracking-wider">Alternative</span>
+                </div>
+                <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
+                  Gunakan model <strong>LivePortrait</strong> sebagai alternatif gratis pengganti Fal.ai. Prioritas akan diberikan ke Hugging Face (gratis). Jika server HF lambat/penuh, sistem akan menggunakan Colab Anda.
+                </p>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm text-zinc-400 mb-1">Hugging Face Token</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="password"
+                        value={hfToken}
+                        onChange={(e) => setHfToken(e.target.value)}
+                        className="input-field w-full"
+                        placeholder="hf_..."
+                      />
+                      <button
+                        onClick={() => {
+                          if (hfToken) {
+                            localStorage.setItem('hfToken_v1', encrypt(hfToken));
+                            alert('Hugging Face Token saved!');
+                          }
+                        }}
+                        className="btn-primary py-2 px-4 text-sm whitespace-nowrap"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm text-zinc-400 mb-1">Colab Backup URL (opsional)</label>
+                    <input
+                      type="text"
+                      value={colabUrl}
+                      onChange={(e) => setColabUrl(e.target.value)}
+                      className="input-field w-full"
+                      placeholder="https://xxx.loca.lt"
+                    />
+                    <p className="text-[10px] text-zinc-600 mt-1 italic">
+                      Gunakan skrip Google Colab (LivePortrait_Colab_Backend.ipynb) untuk mendapatkan URL ini saat HF sedang sibuk.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -747,6 +813,8 @@ function App() {
               geminiApiKey={apiKey} 
               fishAudioKey={fishAudioKey} 
               falKey={falKey} 
+              hfToken={hfToken}
+              colabUrl={colabUrl}
               uploadPostKey={uploadPostKey} 
               uploadUserId={uploadUserId} 
               f5TtsUrl={f5TtsUrl}

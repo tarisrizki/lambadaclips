@@ -2156,6 +2156,7 @@ class SaaSGenerateRequest(BaseModel):
     f5tts_url: Optional[str] = None
     f5tts_ref_text: Optional[str] = None
     f5tts_ref_audio: Optional[str] = None
+    colab_url: Optional[str] = None
 
 
 @app.post("/api/saasshorts/generate")
@@ -2163,13 +2164,15 @@ async def saasshorts_generate(
     req: SaaSGenerateRequest,
     x_fal_key: Optional[str] = Header(None, alias="X-Fal-Key"),
     x_fishaudio_key: Optional[str] = Header(None, alias="X-FishAudio-Key"),
+    x_hf_token: Optional[str] = Header(None, alias="X-HF-Token"),
 ):
     """Generate a SaaS UGC video from a script. Returns a job_id for polling."""
     fal_key = x_fal_key
     fishaudio_key = x_fishaudio_key
+    hf_token = x_hf_token
 
-    if not fal_key:
-        raise HTTPException(status_code=400, detail="Missing fal.ai API Key (X-Fal-Key header)")
+    if not fal_key and not hf_token and not req.colab_url:
+        raise HTTPException(status_code=400, detail="Missing Video API Key (Fal/HF/Colab)")
     if not fishaudio_key and not req.f5tts_url:
         raise HTTPException(status_code=400, detail="Missing Fish Audio API Key or F5-TTS URL")
 
@@ -2232,6 +2235,8 @@ async def saasshorts_generate(
     config = {
         "fal_key": fal_key,
         "fishaudio_key": fishaudio_key,
+        "hf_token": hf_token,
+        "colab_url": req.colab_url,
         "voice_id": req.voice_id or "21m00Tcm4TlvDq8ikWAM",
         "actor_description": req.actor_description,
         "selected_actor_path": selected_actor_path,

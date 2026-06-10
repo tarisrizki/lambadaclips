@@ -34,7 +34,7 @@ function saveCache(url, analysis, webResearch, scripts) {
   } catch { /* localStorage full */ }
 }
 
-export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, uploadPostKey, uploadUserId, f5TtsUrl, f5TtsRefText, f5TtsRefAudio }) {
+export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, hfToken, colabUrl, uploadPostKey, uploadUserId, f5TtsUrl, f5TtsRefText, f5TtsRefAudio }) {
   // Wizard state
   const [step, setStep] = useState(() => {
     const cache = loadCache();
@@ -250,8 +250,8 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, uploa
   };
 
   const handleGenerate = async () => {
-    if (!falKey) {
-      alert('fal.ai API key required. Set it in Settings.');
+    if (!falKey && !hfToken && !colabUrl) {
+      alert('You need to configure either fal.ai Key, Hugging Face Token, or Colab URL in Settings.');
       return;
     }
     if (!fishAudioKey) {
@@ -278,8 +278,9 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, uploa
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Fal-Key': falKey,
-          'X-FishAudio-Key': fishAudioKey,
+          'X-Fal-Key': falKey || '',
+          'X-FishAudio-Key': fishAudioKey || '',
+          'X-HF-Token': hfToken || '',
         },
         body: JSON.stringify({
           script: scriptToSend,
@@ -290,6 +291,7 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, uploa
           f5tts_url: f5TtsUrl || undefined,
           f5tts_ref_text: f5TtsRefText || undefined,
           f5tts_ref_audio: f5TtsRefAudio || undefined,
+          colab_url: colabUrl || undefined,
         }),
       });
 
@@ -327,8 +329,9 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, uploa
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Fal-Key': falKey,
-          'X-FishAudio-Key': fishAudioKey,
+          'X-Fal-Key': falKey || '',
+          'X-FishAudio-Key': fishAudioKey || '',
+          'X-HF-Token': hfToken || '',
         },
         body: JSON.stringify({
           script: scriptToSend,
@@ -339,6 +342,7 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, uploa
           f5tts_url: f5TtsUrl || undefined,
           f5tts_ref_text: f5TtsRefText || undefined,
           f5tts_ref_audio: f5TtsRefAudio || undefined,
+          colab_url: colabUrl || undefined,
         }),
       });
 
@@ -1165,10 +1169,10 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, uploa
               </div>
 
               {/* Missing keys warning */}
-              {(!falKey || (!fishAudioKey && !f5TtsUrl)) && (
+              {((!falKey && !hfToken && !colabUrl) || (!fishAudioKey && !f5TtsUrl)) && (
                 <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center gap-2 text-sm text-amber-400">
                   <AlertCircle size={14} />
-                  {!falKey && 'fal.ai API key missing. '}{!fishAudioKey && !f5TtsUrl && 'Fish Audio API key or F5-TTS URL missing. '}
+                  {(!falKey && !hfToken && !colabUrl) && 'Video API Key (fal.ai/HF/Colab) missing. '}{!fishAudioKey && !f5TtsUrl && 'Fish Audio API key or F5-TTS URL missing. '}
                   Set them in Settings.
                 </div>
               )}
@@ -1180,7 +1184,7 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, uploa
               </button>
               <button
                 onClick={handleGenerate}
-                disabled={!falKey || (!fishAudioKey && !f5TtsUrl) || !selectedActor || generating}
+                disabled={(!falKey && !hfToken && !colabUrl) || (!fishAudioKey && !f5TtsUrl) || !selectedActor || generating}
                 className="btn-primary px-6 py-2 text-sm flex items-center gap-2 disabled:opacity-50"
               >
                 {generating ? (
