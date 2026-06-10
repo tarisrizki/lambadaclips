@@ -2,12 +2,9 @@
   "name": "LambadaClips",
   "image": "mcr.microsoft.com/devcontainers/universal:2",
   "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
-      "version": "latest",
-      "moby": true
-    }
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
   },
-  "postCreateCommand": "python -m pip install -r requirements.txt && cd dashboard && npm install && cd ../remotion && npm install && cd ../render-service && npm install",
+  "postCreateCommand": "echo 'Setup complete. Run docker compose up -d to start.'",
   "customizations": {
     "vscode": {
       "extensions": [
