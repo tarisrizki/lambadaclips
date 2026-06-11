@@ -99,9 +99,6 @@ const pollJob = async (jobId) => {
 
 function App() {
 
-  const [accessKey, setAccessKey] = useState(
-    sessionStorage.getItem(API_ACCESS_KEY_STORAGE_KEY) || ''
-  );
   const [apiKey, setApiKey] = useState(sessionStorage.getItem('gemini_key') || '');
   // Social API State
   const [uploadPostKey, setUploadPostKey] = useState(() => {
@@ -131,18 +128,9 @@ function App() {
   });
   const [colabUrl, setColabUrl] = useState(() => localStorage.getItem('colabUrl_v1') || '');
 
-  // Auto-save API keys
   useEffect(() => {
     if (apiKey) sessionStorage.setItem('gemini_key', apiKey);
   }, [apiKey]);
-
-  useEffect(() => {
-    if (accessKey) {
-      sessionStorage.setItem(API_ACCESS_KEY_STORAGE_KEY, accessKey);
-    } else {
-      sessionStorage.removeItem(API_ACCESS_KEY_STORAGE_KEY);
-    }
-  }, [accessKey]);
   
   useEffect(() => {
     if (uploadPostKey) sessionStorage.setItem('uploadPostKey_v3', uploadPostKey);
@@ -318,7 +306,7 @@ function App() {
   };
 
   const handleProcess = async (data) => {
-    if (!apiKey || !accessKey) {
+    if (!apiKey) {
       setShowKeyModal(true);
       return;
     }
@@ -459,7 +447,7 @@ function App() {
               />
             )}
 
-            {(!apiKey || !accessKey) && (
+            {(!apiKey) && (
               <button
                 onClick={() => setActiveTab('settings')}
                 className="text-xs text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-1 rounded-full border border-amber-500/30 transition-colors flex items-center gap-1.5"
@@ -473,14 +461,14 @@ function App() {
         </header>
 
         {/* Persistent Missing Keys Banner — visible on every screen */}
-        {(!apiKey || !accessKey) && activeTab !== 'settings' && (
+        {(!apiKey) && activeTab !== 'settings' && (
           <div className="mx-6 mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between gap-4 shrink-0 animate-[fadeIn_0.3s_ease-out]">
             <div className="flex items-center gap-3 text-sm text-amber-200">
               <KeyRound size={16} className="shrink-0 text-amber-400" />
               <div>
                 <span className="font-semibold">Required API keys missing.</span>{' '}
                 <span className="text-amber-200/80">
-                  Set the server access key and Gemini API key to use LambadaClips.
+                  Set the Gemini API key to use LambadaClips.
                 </span>
               </div>
             </div>
@@ -518,23 +506,6 @@ function App() {
                 <div className="px-3 py-1 bg-green-500/10 border border-green-500/20 rounded-full text-[10px] text-green-400 font-medium flex items-center gap-2">
                   <Shield size={12} /> Privacy: keys only live in your browser (sent to backend just to process)
                 </div>
-              </div>
-              <div className={`glass-panel p-6 mb-8 ${!accessKey ? 'border-amber-500/30 ring-1 ring-amber-500/20' : ''}`}>
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold">Server Access</h2>
-                  <span className="text-[10px] bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded text-amber-400 uppercase tracking-wider">Required</span>
-                </div>
-                <p className="text-xs text-zinc-500 mb-4 leading-relaxed">
-                  Masukkan nilai yang sama dengan <code>API_ACCESS_KEY</code> pada server.
-                  Key ini melindungi endpoint pemrosesan dari penggunaan tanpa izin.
-                </p>
-                <input
-                  type="password"
-                  value={accessKey}
-                  onChange={(event) => setAccessKey(event.target.value)}
-                  className="input-field w-full"
-                  placeholder="Server access key"
-                />
               </div>
               <KeyInput onKeySet={setApiKey} savedKey={apiKey} />
 
