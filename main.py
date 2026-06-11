@@ -932,7 +932,9 @@ def get_viral_clips(transcript_result, video_duration):
         print(f"❌ Gemini Error: {e}")
         return {'error': str(e)}
 
-def run_pipeline(args):
+def run_pipeline(args, env_override=None):
+    if env_override is None:
+        env_override = {}
     # parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
     
     # input_group = parser.add_mutually_exclusive_group(required=True)
@@ -953,10 +955,9 @@ def run_pipeline(args):
     # 0. API Health Check
     if not args.skip_analysis and not args.enhance:
         print("🔍 Checking Gemini API health before starting...")
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = env_override.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
         if not api_key:
-            print("❌ Error: GEMINI_API_KEY not found in environment variables.")
-            sys.exit(1)
+            raise RuntimeError("GEMINI_API_KEY not found in environment variables.")
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
@@ -964,13 +965,7 @@ def run_pipeline(args):
             client.models.generate_content(model=GEMINI_MODEL_FAST, contents="Ping")
             print("✅ Gemini API is healthy and reachable.")
         except Exception as e:
-            print("\n❌ ========================================= ❌")
-            print("❌ FATAL ERROR: GAGAL MENGHUBUNGI GEMINI API ❌")
-            print("❌ ========================================= ❌")
-            print(f"Alasan: {e}")
-            print("\nServer Gemini Google saat ini sedang sibuk (High Demand) atau API Key tidak valid.")
-            print("Proses dihentikan sebelum mendownload dan transkripsi untuk menghemat waktu Anda.")
-            sys.exit(1)
+            raise RuntimeError(f"Failed to contact Gemini API. Reason: {e}")
 
     script_start_time = time.time()
     
@@ -1059,13 +1054,7 @@ def run_pipeline(args):
         
         if not clips_data or 'shorts' not in clips_data:
             error_msg = clips_data.get('error', 'Unknown error') if isinstance(clips_data, dict) else 'Unknown error'
-            print("\n❌ ========================================= ❌")
-            print("❌ FATAL ERROR: GAGAL MENGHUBUNGI GEMINI API ❌")
-            print("❌ ========================================= ❌")
-            print(f"Alasan: {error_msg}")
-            print("\nServer Gemini Google saat ini sedang sibuk (High Demand) atau API Key tidak valid.")
-            print("Proses dihentikan secara otomatis tanpa mode fallback agar tidak memakan waktu lama.")
-            sys.exit(1)
+            raise RuntimeError(f"Failed to contact Gemini API during analysis. Reason: {error_msg}")
         else:
             # Sort by virality_score descending (default to 0 if not present)
             clips_data['shorts'] = sorted(

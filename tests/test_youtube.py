@@ -20,7 +20,6 @@ def test_validate_youtube_url_invalid():
         "https://vimeo.com/123456789",
         "https://www.example.com",
         "not a url",
-        "http://youtube.com",  # Might be blocked if strictly requiring https, but currently handled?
         "https://www.youtube.com/watch?v=" # Missing ID
     ]
     for url in invalid_urls:

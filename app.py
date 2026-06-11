@@ -48,7 +48,7 @@ from app_core.social import upload_video
 from app_core.state import SQLiteState
 from editor import VideoEditor
 from hooks import add_hook_to_video
-from s3_uploader import upload_job_artifacts, list_all_clips, upload_actor_to_s3, list_actor_gallery, upload_video_to_gallery, list_video_gallery
+from app_core.s3_uploader import upload_job_artifacts, list_all_clips, upload_actor_to_s3, list_actor_gallery, upload_video_to_gallery, list_video_gallery
 from saasshorts import (
     DEFAULT_VOICES,
     analyze_saas,
@@ -71,102 +71,6 @@ from app_core.globals import (
     enhance_jobs, saas_jobs, job_runtime, concurrency_semaphore, api_security
 )
 
-
-def _job_dir(job_id: str) -> str:
-    return job_directory(OUTPUT_DIR, job_id)
-
-
-def _job_media(job_id: str, filename: str) -> str:
-    return job_media_path(OUTPUT_DIR, job_id, filename)
-
-
-def _video_url(job_id: str, filename: str) -> str:
-    safe_job_id = validate_uuid(job_id, "job ID")
-    name = safe_filename(filename)
-    return sign_media_url(f"/videos/{safe_job_id}/{name}", JOB_RETENTION_SECONDS)
-
-
-def _named_video_url(directory: str, filename: str) -> str:
-    safe_directory = safe_filename(directory)
-    s_filename = safe_filename(filename)
-    return sign_media_url(
-        f"/videos/{safe_directory}/{s_filename}",
-        JOB_RETENTION_SECONDS,
-    )
-
-
-def validate_youtube_url(url: str) -> str:
-    parsed_url = urlparse(url)
-    allowed_hosts = {
-        "youtube.com",
-        "www.youtube.com",
-        "m.youtube.com",
-        "youtu.be",
-        "www.youtu.be",
-    }
-    if parsed_url.scheme not in {"http", "https"} or parsed_url.hostname not in allowed_hosts:
-        raise HTTPException(status_code=400, detail="Only YouTube URLs are supported")
-    return url
-
-
-def _thumbnail_url(relative_path: str) -> str:
-    parts = [part for part in relative_path.replace("\\", "/").split("/") if part]
-    if not parts:
-        raise HTTPException(status_code=400, detail="Invalid thumbnail path")
-    safe_parts = [safe_filename(part) for part in parts]
-    safe_join(THUMBNAILS_DIR if "THUMBNAILS_DIR" in globals() else OUTPUT_DIR, *safe_parts)
-    return sign_media_url(
-        f"/thumbnails/{'/'.join(safe_parts)}", JOB_RETENTION_SECONDS
-    )
-
-
-def update_clip_url(job_id: str, clip_index: int, filename: str) -> str:
-    video_url = _video_url(job_id, filename)
-    job = jobs.get(job_id)
-    if job:
-        clips = job.get("result", {}).get("clips", [])
-        if 0 <= clip_index < len(clips):
-            clips[clip_index]["video_url"] = video_url
-
-    metadata_files = glob.glob(os.path.join(_job_dir(job_id), "*_metadata.json"))
-    if metadata_files:
-        metadata_path = metadata_files[0]
-        with open(metadata_path, "r", encoding="utf-8") as metadata_file:
-            data = json.load(metadata_file)
-        disk_clips = data.get("shorts", [])
-        if 0 <= clip_index < len(disk_clips):
-            disk_clips[clip_index]["video_url"] = video_url
-            data["shorts"] = disk_clips
-            temp_path = f"{metadata_path}.{uuid.uuid4().hex}.tmp"
-            try:
-                with open(temp_path, "w", encoding="utf-8") as metadata_file:
-                    json.dump(data, metadata_file, indent=2, ensure_ascii=False)
-                os.replace(temp_path, metadata_path)
-            finally:
-                with contextlib.suppress(OSError):
-                    os.remove(temp_path)
-    return video_url
-
-
-async def save_upload_limited(
-    upload: UploadFile,
-    destination: str,
-    *,
-    max_bytes: int,
-) -> int:
-    written = 0
-    try:
-        with open(destination, "wb") as output_file:
-            while chunk := await upload.read(1024 * 1024):
-                written += len(chunk)
-                if written > max_bytes:
-                    raise HTTPException(status_code=413, detail="Uploaded file is too large")
-                output_file.write(chunk)
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.remove(destination)
-        raise
-    return written
 
 
 def _persist_state() -> None:

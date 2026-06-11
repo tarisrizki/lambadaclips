@@ -27,9 +27,6 @@ class MainArgs:
         self.__dict__.update(kwargs)
 
 def execute_pipeline_sync(job_id, main_args, env_vars, output_dir):
-    old_environ = os.environ.copy()
-    os.environ.update(env_vars)
-    
     class LogWriter:
         def __init__(self, job_id):
             self.job_id = job_id
@@ -50,14 +47,14 @@ def execute_pipeline_sync(job_id, main_args, env_vars, output_dir):
     args = MainArgs(**main_args)
     try:
         with redirect_stdout(writer), redirect_stderr(writer):
-            run_pipeline(args)
+            run_pipeline(args, env_override=env_vars)
         return 0
+    except RuntimeError as e:
+        writer.write(f"Pipeline error: {e}")
+        return 1
     except Exception as e:
         writer.write(f"Pipeline failed: {e}")
         return 1
-    finally:
-        os.environ.clear()
-        os.environ.update(old_environ)
 
 async def run_job(job_id, job_data):
     """Executes the pipeline for a specific job."""
