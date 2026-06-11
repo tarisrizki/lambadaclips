@@ -12,44 +12,7 @@ import UGCGallery from './components/UGCGallery';
 import ScheduleWeekModal from './components/ScheduleWeekModal';
 import { API_ACCESS_KEY_STORAGE_KEY, getApiUrl } from './config';
 
-// Enhanced "Encryption" using XOR + Base64 with a Salt
-// This is better than plain Base64 but still client-side.
-const SECRET_KEY = import.meta.env.VITE_ENCRYPTION_KEY || "LambadaClips-Static-Salt-Change-Me";
-const ENCRYPTION_PREFIX = "ENC:";
-
-const encrypt = (text) => {
-  if (!text) return '';
-  try {
-    const xor = text.split('').map((c, i) =>
-      String.fromCharCode(c.charCodeAt(0) ^ SECRET_KEY.charCodeAt(i % SECRET_KEY.length))
-    ).join('');
-    return ENCRYPTION_PREFIX + btoa(xor);
-  } catch (e) {
-    console.error("Encryption failed", e);
-    return text;
-  }
-};
-
-const decrypt = (text) => {
-  if (!text) return '';
-  if (text.startsWith(ENCRYPTION_PREFIX)) {
-    try {
-      const raw = text.slice(ENCRYPTION_PREFIX.length);
-      // Check if it's plain base64 or our custom XOR (simple try)
-      const xor = atob(raw);
-      const result = xor.split('').map((c, i) =>
-        String.fromCharCode(c.charCodeAt(0) ^ SECRET_KEY.charCodeAt(i % SECRET_KEY.length))
-      ).join('');
-      return result;
-    } catch (e) {
-      // Fallback if decryption fails (might be old plain text)
-      return '';
-    }
-  }
-  // Backward compatibility: If no prefix, assume old plain text (or return empty if you want to force re-login)
-  // For migration: Return text as is, so it populates the field, and next save will encrypt it.
-  return text;
-};
+// Removed fake XOR encryption. Keys will now be stored in sessionStorage.
 
 // Simple TikTok icon sine Lucide might not have it or it varies
 const TikTokIcon = ({ size = 16, className = "" }) => (
@@ -137,14 +100,12 @@ const pollJob = async (jobId) => {
 function App() {
 
   const [accessKey, setAccessKey] = useState(
-    localStorage.getItem(API_ACCESS_KEY_STORAGE_KEY) || ''
+    sessionStorage.getItem(API_ACCESS_KEY_STORAGE_KEY) || ''
   );
-  const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_key') || '');
-  // Social API State - Load encrypted or plain
+  const [apiKey, setApiKey] = useState(sessionStorage.getItem('gemini_key') || '');
+  // Social API State
   const [uploadPostKey, setUploadPostKey] = useState(() => {
-    const stored = localStorage.getItem('uploadPostKey_v3');
-    if (stored) return decrypt(stored);
-    return '';
+    return sessionStorage.getItem('uploadPostKey_v3') || '';
   });
 
 
@@ -166,27 +127,25 @@ function App() {
 
   // LivePortrait State
   const [hfToken, setHfToken] = useState(() => {
-    const stored = localStorage.getItem('hfToken_v1');
-    if (stored) return decrypt(stored);
-    return '';
+    return sessionStorage.getItem('hfToken_v1') || '';
   });
   const [colabUrl, setColabUrl] = useState(() => localStorage.getItem('colabUrl_v1') || '');
 
   // Auto-save API keys
   useEffect(() => {
-    if (apiKey) localStorage.setItem('gemini_key', apiKey);
+    if (apiKey) sessionStorage.setItem('gemini_key', apiKey);
   }, [apiKey]);
 
   useEffect(() => {
     if (accessKey) {
-      localStorage.setItem(API_ACCESS_KEY_STORAGE_KEY, accessKey);
+      sessionStorage.setItem(API_ACCESS_KEY_STORAGE_KEY, accessKey);
     } else {
-      localStorage.removeItem(API_ACCESS_KEY_STORAGE_KEY);
+      sessionStorage.removeItem(API_ACCESS_KEY_STORAGE_KEY);
     }
   }, [accessKey]);
   
   useEffect(() => {
-    if (uploadPostKey) localStorage.setItem('uploadPostKey_v3', encrypt(uploadPostKey));
+    if (uploadPostKey) sessionStorage.setItem('uploadPostKey_v3', uploadPostKey);
   }, [uploadPostKey]);
 
 
@@ -266,14 +225,12 @@ function App() {
   }, [jobId, status, results, activeTab]);
 
   useEffect(() => {
-    // Encrypt Gemini Key too for consistency if desired, but user asked specifically about Social integration not saving well.
-    // For now keeping gemini plain for compatibility unless requested.
-    if (apiKey) localStorage.setItem('gemini_key', apiKey);
+    if (apiKey) sessionStorage.setItem('gemini_key', apiKey);
   }, [apiKey]);
 
   useEffect(() => {
     if (uploadPostKey) {
-      localStorage.setItem('uploadPostKey_v3', encrypt(uploadPostKey));
+      sessionStorage.setItem('uploadPostKey_v3', uploadPostKey);
     }
     if (uploadUserId) {
       localStorage.setItem('uploadUserId', uploadUserId);
@@ -290,7 +247,7 @@ function App() {
 
   useEffect(() => {
     if (hfToken) {
-      localStorage.setItem('hfToken_v1', encrypt(hfToken));
+      sessionStorage.setItem('hfToken_v1', hfToken);
     }
   }, [hfToken]);
 

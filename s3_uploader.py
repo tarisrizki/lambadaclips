@@ -52,8 +52,14 @@ _clips_cache = {
 }
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
+_s3_client_cache = None
+
 def get_s3_client():
     """Returns an authenticated S3 client."""
+    global _s3_client_cache
+    if _s3_client_cache is not None:
+        return _s3_client_cache
+
     access_key = os.environ.get('AWS_ACCESS_KEY_ID')
     secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
     region = os.environ.get('AWS_REGION', 'eu-west-3')
@@ -61,13 +67,14 @@ def get_s3_client():
     if not access_key or not secret_key:
         return None
 
-    return boto3.client(
+    _s3_client_cache = boto3.client(
         's3',
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         region_name=region,
         config=Config(signature_version='s3v4')
     )
+    return _s3_client_cache
 
 def generate_presigned_url(bucket_name, object_key, expiration=3600):
     """Generate a presigned URL to share an S3 object."""

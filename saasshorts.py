@@ -46,7 +46,8 @@ FAL_QUEUE_BASE = "https://queue.fal.run"
 DEFAULT_VOICES = {}
 
 
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+from app_core.config import GEMINI_MODEL_LITE
+GEMINI_MODEL = GEMINI_MODEL_LITE
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1060,10 +1061,10 @@ def transcribe_audio_for_subs(audio_path: str) -> list:
     Transcribe audio with word-level timestamps using faster-whisper.
     Returns list of {"word": str, "start": float, "end": float}.
     """
-    from faster_whisper import WhisperModel
+    from app_core.models import get_whisper_model
 
     print(f"[SaaSShorts] 🎙️ Transcribing audio for subtitles...")
-    model = WhisperModel("base", device="cpu", compute_type="int8")
+    model = get_whisper_model()
     segments, info = model.transcribe(audio_path, word_timestamps=True)
 
     words = []

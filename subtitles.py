@@ -7,12 +7,12 @@ def transcribe_audio(video_path):
     Transcribe audio from a video file using faster-whisper.
     Returns transcript in the same format as main.py for compatibility.
     """
-    from faster_whisper import WhisperModel
+    from app_core.models import get_whisper_model
 
     print(f"🎙️  Transcribing audio from: {video_path}")
 
     # Run on CPU with INT8 quantization for speed
-    model = WhisperModel("base", device="cpu", compute_type="int8")
+    model = get_whisper_model()
 
     segments, info = model.transcribe(video_path, word_timestamps=True)
 

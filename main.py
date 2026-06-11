@@ -777,10 +777,10 @@ def process_video_to_vertical(input_video, final_output_video, draft_mode=True, 
 
 def transcribe_video(video_path):
     print("🎙️  Transcribing video with Faster-Whisper (CPU Optimized)...")
-    from faster_whisper import WhisperModel
+    from app_core.models import get_whisper_model
     
     # Run on CPU with INT8 quantization for speed
-    model = WhisperModel("base", device="cpu", compute_type="int8")
+    model = get_whisper_model()
     
     segments, info = model.transcribe(video_path, word_timestamps=True)
     
@@ -830,8 +830,9 @@ def get_viral_clips(transcript_result, video_duration):
 
     client = genai.Client(api_key=api_key)
     
+    from app_core.config import GEMINI_MODEL_FAST
     # Switched to gemini-2.5-flash for better JSON output reliability
-    model_name = 'gemini-2.5-flash' 
+    model_name = GEMINI_MODEL_FAST
     
     print(f"🤖  Initializing Gemini with model: {model_name}")
 
@@ -931,23 +932,23 @@ def get_viral_clips(transcript_result, video_duration):
         print(f"❌ Gemini Error: {e}")
         return {'error': str(e)}
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
+def run_pipeline(args):
+    # parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
     
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument('-i', '--input', type=str, help="Path to the input video file.")
-    input_group.add_argument('-u', '--url', type=str, help="YouTube URL to download and process.")
+    # input_group = parser.add_mutually_exclusive_group(required=True)
+    # input_group.add_argument('-i', '--input', type=str, help="Path to the input video file.")
+    # input_group.add_argument('-u', '--url', type=str, help="YouTube URL to download and process.")
     
-    parser.add_argument('-o', '--output', type=str, help="Output directory or file (if processing whole video).")
-    parser.add_argument('--keep-original', action='store_true', help="Keep the downloaded YouTube video.")
-    parser.add_argument('--skip-analysis', action='store_true', help="Skip AI analysis and convert the whole video.")
+    # parser.add_argument('-o', '--output', type=str, help="Output directory or file (if processing whole video).")
+    # parser.add_argument('--keep-original', action='store_true', help="Keep the downloaded YouTube video.")
+    # parser.add_argument('--skip-analysis', action='store_true', help="Skip AI analysis and convert the whole video.")
     
     # Enhance mode options
-    parser.add_argument('--enhance', action='store_true', help="Enhance a specific clip to FullHD.")
-    parser.add_argument('--start', type=float, help="Start time in seconds for enhance.")
-    parser.add_argument('--end', type=float, help="End time in seconds for enhance.")
+    # parser.add_argument('--enhance', action='store_true', help="Enhance a specific clip to FullHD.")
+    # parser.add_argument('--start', type=float, help="Start time in seconds for enhance.")
+    # parser.add_argument('--end', type=float, help="End time in seconds for enhance.")
     
-    args = parser.parse_args()
+    # args = parser.parse_args()
 
     # 0. API Health Check
     if not args.skip_analysis and not args.enhance:
@@ -959,7 +960,8 @@ if __name__ == '__main__':
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
-            client.models.generate_content(model='gemini-2.5-flash', contents="Ping")
+            from app_core.config import GEMINI_MODEL_FAST
+            client.models.generate_content(model=GEMINI_MODEL_FAST, contents="Ping")
             print("✅ Gemini API is healthy and reachable.")
         except Exception as e:
             print("\n❌ ========================================= ❌")
@@ -1124,3 +1126,23 @@ if __name__ == '__main__':
 
     total_time = time.time() - script_start_time
     print(f"\n⏱️  Total execution time: {total_time:.2f}s")
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
+    
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('-i', '--input', type=str, help="Path to the input video file.")
+    input_group.add_argument('-u', '--url', type=str, help="YouTube URL to download and process.")
+    
+    parser.add_argument('-o', '--output', type=str, help="Output directory or file (if processing whole video).")
+    parser.add_argument('--keep-original', action='store_true', help="Keep the downloaded YouTube video.")
+    parser.add_argument('--skip-analysis', action='store_true', help="Skip AI analysis and convert the whole video.")
+    
+    # Enhance mode options
+    parser.add_argument('--enhance', action='store_true', help="Enhance a specific clip to FullHD.")
+    parser.add_argument('--start', type=float, help="Start time in seconds for enhance.")
+    parser.add_argument('--end', type=float, help="End time in seconds for enhance.")
+    
+    args = parser.parse_args()
+    run_pipeline(args)

@@ -64,8 +64,9 @@ OUTPUT JSON:
 }}"""
 
     print("🤖 [Thumbnail] Asking Gemini for title suggestions...")
+    from app_core.config import GEMINI_MODEL_FAST
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL_FAST,
         contents=[file_upload, prompt],
         config=types.GenerateContentConfig(
             response_mime_type="application/json"
@@ -142,8 +143,9 @@ OUTPUT JSON:
     "titles": ["title1", "title2", ...]
 }}"""
 
+    from app_core.config import GEMINI_MODEL_FAST
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL_FAST,
         contents=[prompt],
         config=types.GenerateContentConfig(
             response_mime_type="application/json"
@@ -321,8 +323,9 @@ REQUIREMENTS:
 OUTPUT: Return ONLY the description text (no JSON wrapper, no markdown code blocks). The description should be ready to paste directly into YouTube."""
 
     print("🤖 [Thumbnail] Generating YouTube description with chapters...")
+    from app_core.config import GEMINI_MODEL_FAST
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL_FAST,
         contents=[prompt],
     )
 
