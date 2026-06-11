@@ -33,6 +33,7 @@ output/
 # Cache dirs
 .cache/
 .config/
+
 # Multi-agent Skills
 .agents/
 .agent/
@@ -40,7 +41,11 @@ output/
 skills/
 skills-lock.json
 
-# Cleanup and deprecated
-patch_saasshorts*.py
+# One-off scripts (patches, cleanup, verify)
+patch_*.py
+fix_*.py
+cleanup*.py
+verify_*.py
+refactor_*.py
 failed-log.txt
 *.ipynb

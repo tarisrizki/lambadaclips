@@ -12,6 +12,7 @@ publish_jobs = state_db.namespace("publish_jobs")
 enhance_jobs = state_db.namespace("enhance_jobs")
 saas_jobs = state_db.namespace("saas_jobs")
 job_runtime: Dict[str, Dict] = {}
+thumbnail_sessions_runtime: Dict[str, asyncio.Event] = {}
 
 concurrency_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 api_security = ApiSecurity()

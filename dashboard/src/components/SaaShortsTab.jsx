@@ -111,10 +111,8 @@ export default function SaaShortsTab({ geminiApiKey, hfToken, colabUrl, uploadPo
 
   // Fetch voices on mount
   useEffect(() => {
-    if (fishAudioKey) {
-      fetchVoices();
-    }
-  }, [fishAudioKey]);
+    fetchVoices();
+  }, []);
 
   // Reset selected voice when actor gender changes
   useEffect(() => {
@@ -250,8 +248,8 @@ export default function SaaShortsTab({ geminiApiKey, hfToken, colabUrl, uploadPo
   };
 
   const handleGenerate = async () => {
-    if (!sdxlCloudUrl && !hfToken && !colabUrl) {
-      alert('You need to configure either fal.ai Key, Hugging Face Token, or Colab URL in Settings.');
+    if (!hfToken && !colabUrl) {
+      alert('You need to configure Hugging Face Token or Colab URL in Settings for video generation.');
       return;
     }
     
@@ -1075,14 +1073,14 @@ export default function SaaShortsTab({ geminiApiKey, hfToken, colabUrl, uploadPo
 
                 <button
                   onClick={async () => {
-                    if (!falKey || !actorDescription) return;
+                    if (!actorDescription) return;
                     setGeneratingActors(true);
                     setActorOptions([]);
                     setSelectedActor(null);
                     try {
                       const res = await fetch(getApiUrl('/api/saasshorts/actor-options'), {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'X-Fal-Key': falKey },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ actor_description: actorDescription, num_options: 3 }),
                       });
                       if (res.ok) {
@@ -1098,10 +1096,10 @@ export default function SaaShortsTab({ geminiApiKey, hfToken, colabUrl, uploadPo
                     } catch (e) { console.error(e); }
                     finally { setGeneratingActors(false); }
                   }}
-                  disabled={generatingActors || !falKey || !actorDescription}
+                  disabled={generatingActors || !actorDescription}
                   className="mt-2 w-full text-sm bg-violet-500/20 text-violet-300 px-4 py-2.5 rounded-lg hover:bg-violet-500/30 transition-colors disabled:opacity-40 flex items-center justify-center gap-2 font-medium"
                 >
-                  {generatingActors ? <><Loader2 size={14} className="animate-spin" /> Generating 3 actors...</> : <><User size={14} /> {actorOptions.length > 0 ? 'Regenerate Actors' : 'Generate 3 New Actors'} (~$0.06)</>}
+                  {generatingActors ? <><Loader2 size={14} className="animate-spin" /> Generating 3 actors...</> : <><User size={14} /> {actorOptions.length > 0 ? 'Regenerate Actors' : 'Generate 3 New Actors'} (Free - Gemini)</>}
                 </button>
 
                 {/* Newly Generated Actor Options */}
@@ -1155,21 +1153,18 @@ export default function SaaShortsTab({ geminiApiKey, hfToken, colabUrl, uploadPo
               <div className="p-3 bg-white/5 rounded-lg border border-white/10">
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-zinc-400">Estimated cost</span>
-                  <span className="text-green-400 font-semibold">~${videoMode === 'lowcost' ? '0.65' : '2.50'}</span>
+                  <span className="text-green-400 font-semibold">~$0.00 (Free APIs)</span>
                 </div>
                 <div className="text-[10px] text-zinc-600 mt-1">
-                  {videoMode === 'lowcost'
-                    ? 'Flux image ($0.05) + Fish Audio voice ($0.10) + Hailuo 2.3 img2video ($0.19) + VEED Lipsync ($0.20) + Flux b-roll ($0.10)'
-                    : 'Flux image ($0.05) + Fish Audio voice ($0.10) + Kling avatar ($1.69) + Kling b-roll ($0.70)'
-                  }
+                  Gemini actor image (free) + F5-TTS voice (free/self-hosted) + LivePortrait talking head (free/HF/Colab)
                 </div>
               </div>
 
               {/* Missing keys warning */}
-              {((!falKey && !hfToken && !colabUrl) || (!fishAudioKey && !f5TtsUrl)) && (
+              {(!hfToken && !colabUrl) && (
                 <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center gap-2 text-sm text-amber-400">
                   <AlertCircle size={14} />
-                  {(!falKey && !hfToken && !colabUrl) && 'Video API Key (fal.ai/HF/Colab) missing. '}{!fishAudioKey && !f5TtsUrl && 'Fish Audio API key or F5-TTS URL missing. '}
+                  {(!hfToken && !colabUrl) && 'Video generation requires HF Token or Colab URL. '}{!f5TtsUrl && 'F5-TTS URL missing for voice. '}
                   Set them in Settings.
                 </div>
               )}
@@ -1181,7 +1176,7 @@ export default function SaaShortsTab({ geminiApiKey, hfToken, colabUrl, uploadPo
               </button>
               <button
                 onClick={handleGenerate}
-                disabled={(!falKey && !hfToken && !colabUrl) || (!fishAudioKey && !f5TtsUrl) || !selectedActor || generating}
+                disabled={(!hfToken && !colabUrl) || !f5TtsUrl || !selectedActor || generating}
                 className="btn-primary px-6 py-2 text-sm flex items-center gap-2 disabled:opacity-50"
               >
                 {generating ? (

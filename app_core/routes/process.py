@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Header, UploadFile, File, Form, Re
 from pydantic import BaseModel
 
 from app_core.globals import jobs, job_runtime, job_queue, api_security
+from app_core.executors import cpu_executor, io_executor
 from app_core.config import MAX_FILE_SIZE_MB, DISABLE_YOUTUBE_URL, UPLOAD_DIR
 from app_core.paths import safe_join, safe_upload_suffix, validate_uuid
 from app_core.utils import validate_youtube_url, _job_dir, _video_url
@@ -27,33 +28,24 @@ class MainArgs:
         self.__dict__.update(kwargs)
 
 def execute_pipeline_sync(job_id, main_args, env_vars, output_dir):
-    class LogWriter:
-        def __init__(self, job_id):
-            self.job_id = job_id
-        def write(self, message):
-            msg = message.strip()
-            if msg:
-                print(f"📝 [Job Output] {msg}")
-                if self.job_id in jobs:
-                    jobs[self.job_id]['logs'].append(msg)
-        def flush(self):
-            pass
+    def log_callback(message: str):
+        msg = message.strip()
+        if msg:
+            print(f"📝 [Job Output] {msg}")
+            if job_id in jobs:
+                jobs[job_id]['logs'].append(msg)
             
-    import sys
-    from contextlib import redirect_stdout, redirect_stderr
     from main import run_pipeline
     
-    writer = LogWriter(job_id)
     args = MainArgs(**main_args)
     try:
-        with redirect_stdout(writer), redirect_stderr(writer):
-            run_pipeline(args, env_override=env_vars)
+        run_pipeline(args, env_override=env_vars, log_callback=log_callback)
         return 0
     except RuntimeError as e:
-        writer.write(f"Pipeline error: {e}")
+        log_callback(f"Pipeline error: {e}")
         return 1
     except Exception as e:
-        writer.write(f"Pipeline failed: {e}")
+        log_callback(f"Pipeline failed: {e}")
         return 1
 
 async def run_job(job_id, job_data):
@@ -107,10 +99,14 @@ async def run_job(job_id, job_data):
         
         # Start S3 upload in background (silent, non-blocking)
         loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, upload_job_artifacts, output_dir, job_id)
+        loop.run_in_executor(io_executor, upload_job_artifacts, output_dir, job_id)
     else:
         jobs[job_id]['status'] = 'failed'
         jobs[job_id]['logs'].append(f"Process failed with exit code {returncode}.")
+
+    # Prevent API key leak by removing runtime data when job finishes
+    if job_id in job_runtime:
+        del job_runtime[job_id]
 
 
 @router.post("/api/process")

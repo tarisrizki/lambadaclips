@@ -64,13 +64,16 @@ class SQLiteState:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.namespaces: list[PersistentNamespace] = []
+        self._local = threading.local()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=NORMAL")
-        return connection
+        if not hasattr(self._local, "connection"):
+            connection = sqlite3.connect(self.path, timeout=30)
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            self._local.connection = connection
+        return self._local.connection
 
     def _initialize(self) -> None:
         with self.lock, self._connect() as connection:

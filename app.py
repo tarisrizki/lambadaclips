@@ -1,65 +1,25 @@
 import os
-import uuid
-import subprocess
-import threading
-import json
 import shutil
-import glob
 import time
 import asyncio
 import logging
 import contextlib
-import functools
-import httpx
-import sys
-from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from typing import Dict, Optional, List
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header, BackgroundTasks
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 from app_core.config import (
     CORS_ORIGINS,
     DISABLE_YOUTUBE_URL,
     JOB_RETENTION_SECONDS,
     MAX_CONCURRENT_JOBS,
-    MAX_FILE_SIZE_MB,
     OUTPUT_DIR as OUTPUT_PATH,
-    STATE_DB_PATH,
     UPLOAD_DIR as UPLOAD_PATH,
 )
-from app_core.paths import (
-    job_directory,
-    job_media_path,
-    safe_filename,
-    safe_join,
-    safe_upload_suffix,
-    validate_prefixed_uuid,
-    validate_uuid,
-)
-from app_core.security import ApiSecurity, sign_media_url
-from app_core.social import upload_video
-from app_core.state import SQLiteState
-from editor import VideoEditor
-from hooks import add_hook_to_video
-from app_core.s3_uploader import upload_job_artifacts, list_all_clips, upload_actor_to_s3, list_actor_gallery, upload_video_to_gallery, list_video_gallery
-from saasshorts import (
-    DEFAULT_VOICES,
-    analyze_saas,
-    generate_full_video,
-    generate_scripts,
-    research_saas_online,
-    scrape_website,
-)
-from subtitles import generate_srt, burn_subtitles, generate_srt_from_video
-from thumbnail import analyze_video_for_titles, refine_titles, generate_thumbnail, generate_youtube_description
-# translation removed
 
 logger = logging.getLogger("lambadaclips")
 
@@ -67,10 +27,9 @@ UPLOAD_DIR = os.fspath(UPLOAD_PATH)
 OUTPUT_DIR = os.fspath(OUTPUT_PATH)
 
 from app_core.globals import (
-    state_db, job_queue, jobs, thumbnail_sessions, publish_jobs,
+    state_db, job_queue, jobs, publish_jobs,
     enhance_jobs, saas_jobs, job_runtime, concurrency_semaphore, api_security
 )
-
 
 
 def _persist_state() -> None:
@@ -87,52 +46,10 @@ def _mark_interrupted_jobs() -> None:
     _persist_state()
 
 
-_mark_interrupted_jobs()
-
-def _relocate_root_job_artifacts(job_id: str, job_output_dir: str) -> bool:
-    """
-    Backward-compat rescue:
-    If main.py accidentally wrote metadata/clips into OUTPUT_DIR root (e.g. output/<jobid>_...),
-    move them into output/<job_id>/ so the API can find and serve them.
-    """
-    try:
-        os.makedirs(job_output_dir, exist_ok=True)
-        root = OUTPUT_DIR
-        pattern = os.path.join(root, f"{job_id}_*_metadata.json")
-        meta_candidates = sorted(glob.glob(pattern), key=lambda p: os.path.getmtime(p), reverse=True)
-        if not meta_candidates:
-            return False
-
-        # Move the newest metadata and its associated clips.
-        metadata_path = meta_candidates[0]
-        base_name = os.path.basename(metadata_path).replace("_metadata.json", "")
-
-        # Move metadata
-        dest_metadata = os.path.join(job_output_dir, os.path.basename(metadata_path))
-        if os.path.abspath(metadata_path) != os.path.abspath(dest_metadata):
-            shutil.move(metadata_path, dest_metadata)
-
-        # Move any clips that match the same base_name into the job folder
-        clip_pattern = os.path.join(root, f"{base_name}_clip_*.mp4")
-        for clip_path in glob.glob(clip_pattern):
-            dest_clip = os.path.join(job_output_dir, os.path.basename(clip_path))
-            if os.path.abspath(clip_path) != os.path.abspath(dest_clip):
-                shutil.move(clip_path, dest_clip)
-
-        # Also move any temp_ clips that might remain
-        temp_clip_pattern = os.path.join(root, f"temp_{base_name}_clip_*.mp4")
-        for clip_path in glob.glob(temp_clip_pattern):
-            dest_clip = os.path.join(job_output_dir, os.path.basename(clip_path))
-            if os.path.abspath(clip_path) != os.path.abspath(dest_clip):
-                shutil.move(clip_path, dest_clip)
-
-        return True
-    except Exception:
-        return False
 
 async def cleanup_jobs():
     """Background task to remove old jobs and files."""
-    print("🧹 Cleanup task started.")
+    logger.info("🧹 Cleanup task started.")
     while True:
         try:
             await asyncio.sleep(300) # Check every 5 minutes
@@ -144,7 +61,7 @@ async def cleanup_jobs():
                 job_path = os.path.join(OUTPUT_DIR, job_id)
                 if os.path.isdir(job_path):
                     if now - os.path.getmtime(job_path) > JOB_RETENTION_SECONDS:
-                        print(f"🧹 Purging old job: {job_id}")
+                        logger.info("🧹 Purging old job: %s", job_id)
                         shutil.rmtree(job_path, ignore_errors=True)
                         if job_id in jobs:
                             del jobs[job_id]
@@ -169,11 +86,11 @@ async def cleanup_jobs():
                     logger.warning("Could not remove expired upload %s: %s", file_path, exc)
 
         except Exception as e:
-            print(f"⚠️ Cleanup error: {e}")
+            logger.warning("Cleanup error: %s", e)
 
 async def process_queue():
     """Background worker to process jobs from the queue with concurrency limit."""
-    print(f"🚀 Job Queue Worker started with {MAX_CONCURRENT_JOBS} concurrent slots.")
+    logger.info("🚀 Job Queue Worker started with %d concurrent slots.", MAX_CONCURRENT_JOBS)
     while True:
         try:
             # Wait for a job
@@ -181,13 +98,13 @@ async def process_queue():
             
             # Acquire semaphore slot (waits if max jobs are running)
             await concurrency_semaphore.acquire()
-            print(f"🔄 Acquired slot for job: {job_id}")
+            logger.info("🔄 Acquired slot for job: %s", job_id)
 
             # Process in background task to not block the loop (allowing other slots to fill)
             asyncio.create_task(run_job_wrapper(job_id))
             
         except Exception as e:
-            print(f"❌ Queue dispatch error: {e}")
+            logger.error("Queue dispatch error: %s", e)
             await asyncio.sleep(1)
 
 
@@ -204,15 +121,16 @@ async def run_job_wrapper(job_id):
         if job:
             await run_job(job_id, job)
     except Exception as e:
-         print(f"❌ Job wrapper error {job_id}: {e}")
+         logger.error("Job wrapper error %s: %s", job_id, e)
     finally:
         # Always release semaphore and mark queue task done
         concurrency_semaphore.release()
         job_queue.task_done()
-        print(f"✅ Released slot for job: {job_id}")
+        logger.info("✅ Released slot for job: %s", job_id)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _mark_interrupted_jobs()
     from app_core.routes.saasshorts import process_saas_queue
     worker_task = asyncio.create_task(process_queue())
     saas_task = asyncio.create_task(process_saas_queue())

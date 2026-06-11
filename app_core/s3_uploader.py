@@ -52,6 +52,8 @@ _clips_cache = {
 }
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
+import threading
+_s3_lock = threading.Lock()
 _s3_client_cache = None
 
 def get_s3_client():
@@ -60,8 +62,12 @@ def get_s3_client():
     if _s3_client_cache is not None:
         return _s3_client_cache
 
-    access_key = os.environ.get('AWS_ACCESS_KEY_ID')
-    secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+    with _s3_lock:
+        if _s3_client_cache is not None:
+            return _s3_client_cache
+
+        access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+        secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
     region = os.environ.get('AWS_REGION', 'eu-west-3')
 
     if not access_key or not secret_key:

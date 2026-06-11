@@ -71,6 +71,12 @@ OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by pre
 import threading
 import functools
 
+from app_core.logger import logger, _log_local
+
+def log(*args, **kwargs):
+    msg = kwargs.get("sep", " ").join(str(a) for a in args)
+    logger.info(msg)
+
 # Thread-local storage for MediaPipe to ensure thread safety
 _thread_local = threading.local()
 
@@ -199,6 +205,9 @@ class SpeakerTracker:
         """
         current_candidates = []
         
+        # 0. Prune old faces (Memory leak fix)
+        self.known_faces = [kf for kf in self.known_faces if frame_number - kf['last_frame'] <= 30]
+
         # 1. Match faces to known IDs (simple distance tracking)
         for face in face_candidates:
             x, y, w, h = face['box']
@@ -207,11 +216,10 @@ class SpeakerTracker:
             best_match_id = -1
             min_dist = width * 0.15 # Reduced matching radius to avoid jumping in groups
             
+
+                    
             # Try to match with known faces seen recently
             for kf in self.known_faces:
-                if frame_number - kf['last_frame'] > 30: # Forgot faces older than 1s (was 2s)
-                    continue
-                    
                 dist = abs(center_x - kf['center'])
                 if dist < min_dist:
                     min_dist = dist
@@ -291,6 +299,7 @@ def detect_face_candidates(frame):
     """
     Returns list of all detected faces using lightweight FaceDetection.
     """
+    frame_height, frame_width = frame.shape[:2]
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     detector = get_face_detector()
     results = detector.process(rgb_frame)
@@ -302,15 +311,16 @@ def detect_face_candidates(frame):
         
     for detection in results.detections:
         bboxC = detection.location_data.relative_bounding_box
-        x = int(bboxC.xmin * width)
-        y = int(bboxC.ymin * height)
-        w = int(bboxC.width * width)
-        h = int(bboxC.height * height)
+        x = int(bboxC.xmin * frame_width)
+        y = int(bboxC.ymin * frame_height)
+        w = int(bboxC.width * frame_width)
+        h = int(bboxC.height * frame_height)
         
-        candidates.append({
-            'box': [x, y, w, h],
-            'score': w * h # Area as score
-        })
+        if w > 0 and h > 0:
+            candidates.append({
+                'box': [x, y, w, h],
+                'score': w * h # Area as score
+            })
             
     return candidates
 
@@ -462,28 +472,28 @@ def download_youtube_video(url, output_dir="."):
     Downloads a YouTube video using yt-dlp.
     Returns the path to the downloaded video and the video title.
     """
-    print(f"🔍 Debug: yt-dlp version: {yt_dlp.version.__version__}")
-    print("📥 Downloading video from YouTube...")
+    log(f"🔍 Debug: yt-dlp version: {yt_dlp.version.__version__}")
+    log("📥 Downloading video from YouTube...")
     step_start_time = time.time()
 
     cookies_path = '/app/cookies.txt'
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
-        print("🍪 Found YOUTUBE_COOKIES env var, creating cookies file inside container...")
+        log("🍪 Found YOUTUBE_COOKIES env var, creating cookies file inside container...")
         try:
             with open(cookies_path, 'w') as f:
                 f.write(cookies_env)
             if os.path.exists(cookies_path):
-                 print(f"   Debug: Cookies file created. Size: {os.path.getsize(cookies_path)} bytes")
+                 log(f"   Debug: Cookies file created. Size: {os.path.getsize(cookies_path)} bytes")
                  with open(cookies_path, 'r') as f:
                      content = f.read(100)
-                     print(f"   Debug: First 100 chars of cookie file: {content}")
+                     log(f"   Debug: First 100 chars of cookie file: {content}")
         except Exception as e:
-            print(f"⚠️ Failed to write cookies file: {e}")
+            log(f"⚠️ Failed to write cookies file: {e}")
             cookies_path = None
     else:
         cookies_path = None
-        print("⚠️ YOUTUBE_COOKIES env var not found.")
+        log("⚠️ YOUTUBE_COOKIES env var not found.")
     
     # Common yt-dlp options to work around YouTube bot detection.
     # extractor_args tries multiple player clients in order; tv_embed / android
@@ -496,7 +506,7 @@ def download_youtube_video(url, output_dir="."):
         'socket_timeout': 30,
         'retries': 10,
         'fragment_retries': 10,
-        'nocheckcertificate': True,
+        'nocheckcertificate': os.environ.get('YT_DLP_NO_CHECK_CERT', '').lower() == 'true',
         'cachedir': False,
         'extractor_args': {
             'youtube': {
@@ -524,7 +534,7 @@ def download_youtube_video(url, output_dir="."):
             import traceback
             
             # Print minimal error first to ensure something gets out
-            print("🚨 YOUTUBE DOWNLOAD ERROR 🚨", file=sys.stderr)
+            log("🚨 YOUTUBE DOWNLOAD ERROR 🚨", file=sys.stderr)
             
             error_msg = f"""
             
@@ -544,8 +554,8 @@ REASON: YouTube has blocked the download request (Error 429/Unavailable).
 Technical Details: {str(e)}
             """
             # Print to both streams to ensure capture
-            print(error_msg, file=sys.stdout)
-            print(error_msg, file=sys.stderr)
+            log(error_msg, file=sys.stdout)
+            log(error_msg, file=sys.stderr)
             
             # Force flush
             sys.stdout.flush()
@@ -560,7 +570,7 @@ Technical Details: {str(e)}
     expected_file = os.path.join(output_dir, f'{sanitized_title}.mp4')
     if os.path.exists(expected_file):
         os.remove(expected_file)
-        print(f"🗑️  Removed existing file to re-download with H.264 codec")
+        log(f"🗑️  Removed existing file to re-download with H.264 codec")
     
     ydl_opts = {
         **_COMMON_YDL_OPTS,
@@ -582,7 +592,7 @@ Technical Details: {str(e)}
                 break
     
     step_end_time = time.time()
-    print(f"✅ Video downloaded in {step_end_time - step_start_time:.2f}s: {downloaded_file}")
+    log(f"✅ Video downloaded in {step_end_time - step_start_time:.2f}s: {downloaded_file}")
     
     return downloaded_file, sanitized_title
 
@@ -595,23 +605,25 @@ def process_video_to_vertical(input_video, final_output_video, draft_mode=True, 
     """
     import tempfile
     import uuid
+    import contextlib
     uid = uuid.uuid4().hex[:6]
-    temp_video_output = f"temp_video_{uid}.mp4"
-    temp_audio_output = f"temp_audio_{uid}.mp4"
+    output_dir = os.path.dirname(final_output_video)
+    temp_video_output = os.path.join(output_dir, f"temp_video_{uid}.mp4")
+    temp_audio_output = os.path.join(output_dir, f"temp_audio_{uid}.mp4")
     
-    print(f"\n   {'🎬 [ENHANCE] Processing High Quality' if not draft_mode else '🎬 [DRAFT] Processing Fast Preview'}")
+    log(f"\n   {'🎬 [ENHANCE] Processing High Quality' if not draft_mode else '🎬 [DRAFT] Processing Fast Preview'}")
     
     # Clean up previous temp files if they exist
     if os.path.exists(temp_video_output): os.remove(temp_video_output)
     if os.path.exists(temp_audio_output): os.remove(temp_audio_output)
     if os.path.exists(final_output_video): os.remove(final_output_video)
 
-    print(f"🎬 Processing clip: {input_video}")
-    print("   Step 1: Detecting scenes...")
+    log(f"🎬 Processing clip: {input_video}")
+    log("   Step 1: Detecting scenes...")
     scenes, fps = detect_scenes(input_video)
     
     if not scenes:
-        print("   ❌ No scenes were detected. Using full video as one scene.")
+        log("   ❌ No scenes were detected. Using full video as one scene.")
         # If scene detection fails or finds nothing, treat whole video as one scene
         cap = cv2.VideoCapture(input_video)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -619,9 +631,9 @@ def process_video_to_vertical(input_video, final_output_video, draft_mode=True, 
         from scenedetect import FrameTimecode
         scenes = [(FrameTimecode(0, fps), FrameTimecode(total_frames, fps))]
 
-    print(f"   ✅ Found {len(scenes)} scenes.")
+    log(f"   ✅ Found {len(scenes)} scenes.")
 
-    print("\n   🧠 Step 2: Preparing Active Tracking...")
+    log("\n   🧠 Step 2: Preparing Active Tracking...")
     original_width, original_height = get_video_resolution(input_video)
     
     if draft_mode:
@@ -637,11 +649,11 @@ def process_video_to_vertical(input_video, final_output_video, draft_mode=True, 
     cameraman = SmoothedCameraman(OUTPUT_WIDTH, OUTPUT_HEIGHT, original_width, original_height)
     
     # --- New Strategy: Per-Scene Analysis ---
-    print("\n   🤖 Step 3: Analyzing Scenes for Strategy (Single vs Group)...")
+    log("\n   🤖 Step 3: Analyzing Scenes for Strategy (Single vs Group)...")
     scene_strategies = analyze_scenes_strategy(input_video, scenes)
     # scene_strategies is a list of 'TRACK' or 'General' corresponding to scenes
     
-    print("\n   ✂️ Step 4: Processing video frames...")
+    log("\n   ✂️ Step 4: Processing video frames...")
     
     command = [
         'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo',
@@ -728,14 +740,23 @@ def process_video_to_vertical(input_video, final_output_video, draft_mode=True, 
             frame_number += 1
             pbar.update(1)
     
+    import threading
+    stderr_lines = []
+    def _read_stderr(proc):
+        for line in proc.stderr:
+            stderr_lines.append(line.decode(errors='replace').rstrip())
+
     ffmpeg_process.stdin.close()
-    stderr_output = ffmpeg_process.stderr.read().decode()
+    stderr_thread = threading.Thread(target=_read_stderr, args=(ffmpeg_process,), daemon=True)
+    stderr_thread.start()
     ffmpeg_process.wait()
+    stderr_thread.join(timeout=5)
+    stderr_output = "\n".join(stderr_lines)
     cap.release()
 
     if ffmpeg_process.returncode != 0:
-        print("\n   ❌ FFmpeg frame processing failed.")
-        print("   Stderr:", stderr_output)
+        log("\n   ❌ FFmpeg frame processing failed.")
+        log("   Stderr:", stderr_output)
         return False
 
     # --- Extract Audio ---
@@ -749,7 +770,7 @@ def process_video_to_vertical(input_video, final_output_video, draft_mode=True, 
     except subprocess.CalledProcessError:
         pass
 
-    print("\n   ✨ Step 6: Merging...")
+    log("\n   ✨ Step 6: Merging...")
     if os.path.exists(temp_audio_output):
         merge_command = [
             'ffmpeg', '-y', '-i', temp_video_output, '-i', temp_audio_output,
@@ -763,20 +784,21 @@ def process_video_to_vertical(input_video, final_output_video, draft_mode=True, 
         
     try:
         subprocess.run(merge_command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        print(f"   ✅ Clip saved to {final_output_video}")
+        log(f"   ✅ Clip saved to {final_output_video}")
     except subprocess.CalledProcessError as e:
-        print("\n   ❌ Final merge failed.")
-        print("   Stderr:", e.stderr.decode())
+        log("\n   ❌ Final merge failed.")
+        log("   Stderr:", e.stderr.decode())
         return False
 
     # Clean up temp files
-    if os.path.exists(temp_video_output): os.remove(temp_video_output)
-    if os.path.exists(temp_audio_output): os.remove(temp_audio_output)
+    with contextlib.suppress(OSError):
+        if os.path.exists(temp_video_output): os.remove(temp_video_output)
+        if os.path.exists(temp_audio_output): os.remove(temp_audio_output)
     
     return True
 
 def transcribe_video(video_path):
-    print("🎙️  Transcribing video with Faster-Whisper (CPU Optimized)...")
+    log("🎙️  Transcribing video with Faster-Whisper (CPU Optimized)...")
     from app_core.models import get_whisper_model
     
     # Run on CPU with INT8 quantization for speed
@@ -784,7 +806,7 @@ def transcribe_video(video_path):
     
     segments, info = model.transcribe(video_path, word_timestamps=True)
     
-    print(f"   Detected language '{info.language}' with probability {info.language_probability:.2f}")
+    log(f"   Detected language '{info.language}' with probability {info.language_probability:.2f}")
     
     # Convert to openai-whisper compatible format
     transcript_segments = []
@@ -792,7 +814,7 @@ def transcribe_video(video_path):
     
     for segment in segments:
         # Print progress to keep user informed (and prevent timeouts feeling)
-        print(f"   [{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
+        log(f"   [{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
         
         seg_dict = {
             'text': segment.text,
@@ -820,11 +842,11 @@ def transcribe_video(video_path):
     }
 
 def get_viral_clips(transcript_result, video_duration):
-    print("🤖  Analyzing with Gemini...")
+    log("🤖  Analyzing with Gemini...")
     
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("❌ Error: GEMINI_API_KEY not found in environment variables.")
+        log("❌ Error: GEMINI_API_KEY not found in environment variables.")
         return None
 
 
@@ -834,7 +856,7 @@ def get_viral_clips(transcript_result, video_duration):
     # Switched to gemini-2.5-flash for better JSON output reliability
     model_name = GEMINI_MODEL_FAST
     
-    print(f"🤖  Initializing Gemini with model: {model_name}")
+    log(f"🤖  Initializing Gemini with model: {model_name}")
 
     # Extract words
     words = []
@@ -863,11 +885,9 @@ def get_viral_clips(transcript_result, video_duration):
             usage = response.usage_metadata
             if usage:
                 # Gemini 2.5 Flash Pricing (Dec 2025)
-                # Input: $0.10 per 1M tokens
-                # Output: $0.40 per 1M tokens
-                
-                input_price_per_million = 0.10
-                output_price_per_million = 0.40
+                from app_core.config import GEMINI_INPUT_PRICE_PER_MILLION, GEMINI_OUTPUT_PRICE_PER_MILLION
+                input_price_per_million = GEMINI_INPUT_PRICE_PER_MILLION
+                output_price_per_million = GEMINI_OUTPUT_PRICE_PER_MILLION
                 
                 prompt_tokens = usage.prompt_token_count
                 output_tokens = usage.candidates_token_count
@@ -885,13 +905,13 @@ def get_viral_clips(transcript_result, video_duration):
                     "model": model_name
                 }
 
-                print(f"💰 Token Usage ({model_name}):")
-                print(f"   - Input Tokens: {prompt_tokens} (${input_cost:.6f})")
-                print(f"   - Output Tokens: {output_tokens} (${output_cost:.6f})")
-                print(f"   - Total Estimated Cost: ${total_cost:.6f}")
+                log(f"💰 Token Usage ({model_name}):")
+                log(f"   - Input Tokens: {prompt_tokens} (${input_cost:.6f})")
+                log(f"   - Output Tokens: {output_tokens} (${output_cost:.6f})")
+                log(f"   - Total Estimated Cost: ${total_cost:.6f}")
                 
         except Exception as e:
-            print(f"⚠️ Could not calculate cost: {e}")
+            log(f"⚠️ Could not calculate cost: {e}")
             cost_analysis = None
         # ------------------------
 
@@ -929,32 +949,17 @@ def get_viral_clips(transcript_result, video_duration):
             
         return result_json
     except Exception as e:
-        print(f"❌ Gemini Error: {e}")
+        log(f"❌ Gemini Error: {e}")
         return {'error': str(e)}
 
-def run_pipeline(args, env_override=None):
+def run_pipeline(args, env_override=None, log_callback=None):
+    _log_local.log_callback = log_callback
     if env_override is None:
         env_override = {}
-    # parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
-    
-    # input_group = parser.add_mutually_exclusive_group(required=True)
-    # input_group.add_argument('-i', '--input', type=str, help="Path to the input video file.")
-    # input_group.add_argument('-u', '--url', type=str, help="YouTube URL to download and process.")
-    
-    # parser.add_argument('-o', '--output', type=str, help="Output directory or file (if processing whole video).")
-    # parser.add_argument('--keep-original', action='store_true', help="Keep the downloaded YouTube video.")
-    # parser.add_argument('--skip-analysis', action='store_true', help="Skip AI analysis and convert the whole video.")
-    
-    # Enhance mode options
-    # parser.add_argument('--enhance', action='store_true', help="Enhance a specific clip to FullHD.")
-    # parser.add_argument('--start', type=float, help="Start time in seconds for enhance.")
-    # parser.add_argument('--end', type=float, help="End time in seconds for enhance.")
-    
-    # args = parser.parse_args()
 
     # 0. API Health Check
     if not args.skip_analysis and not args.enhance:
-        print("🔍 Checking Gemini API health before starting...")
+        log("🔍 Checking Gemini API health before starting...")
         api_key = env_override.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY not found in environment variables.")
@@ -963,7 +968,7 @@ def run_pipeline(args, env_override=None):
             client = genai.Client(api_key=api_key)
             from app_core.config import GEMINI_MODEL_FAST
             client.models.generate_content(model=GEMINI_MODEL_FAST, contents="Ping")
-            print("✅ Gemini API is healthy and reachable.")
+            log("✅ Gemini API is healthy and reachable.")
         except Exception as e:
             raise RuntimeError(f"Failed to contact Gemini API. Reason: {e}")
 
@@ -1008,16 +1013,14 @@ def run_pipeline(args, env_override=None):
                 output_dir = os.path.dirname(input_video)
 
     if not os.path.exists(input_video):
-        print(f"❌ Input file not found: {input_video}")
-        exit(1)
+        raise RuntimeError(f"Input file not found: {input_video}")
 
     # 2. Handle Enhance Mode
     if args.enhance:
         if args.start is None or args.end is None:
-            print("❌ --start and --end must be provided for --enhance.")
-            exit(1)
+            raise ValueError("--start and --end must be provided for --enhance.")
         
-        print(f"🚀 Enhancing clip from {args.start}s to {args.end}s to FullHD...")
+        log(f"🚀 Enhancing clip from {args.start}s to {args.end}s to FullHD...")
         # For enhance mode, input_video is the original wide video. We must first extract just the 30s portion
         # so that process_video_to_vertical (which reads all frames) only processes that portion.
         temp_cut = os.path.join(output_dir, f"temp_enhance_cut_{int(time.time())}.mp4")
@@ -1030,12 +1033,12 @@ def run_pipeline(args, env_override=None):
         
         if os.path.exists(temp_cut):
             os.remove(temp_cut)
-        print(f"✅ Enhance completed: {output_file}")
-        exit(0)
+        log(f"✅ Enhance completed: {output_file}")
+        return
 
     # 3. Decision: Analyze clips or process whole?
     if args.skip_analysis:
-        print("⏩ Skipping analysis, processing entire video...")
+        log("⏩ Skipping analysis, processing entire video...")
         output_file = args.output if args.output else os.path.join(output_dir, f"{video_title}_vertical.mp4")
         process_video_to_vertical(input_video, output_file, draft_mode=True)
     else:
@@ -1062,7 +1065,7 @@ def run_pipeline(args, env_override=None):
                 key=lambda x: x.get('virality_score', 0), 
                 reverse=True
             )
-            print(f"🔥 Found {len(clips_data['shorts'])} viral clips!")
+            log(f"🔥 Found {len(clips_data['shorts'])} viral clips!")
             
             # Save metadata
             clips_data['transcript'] = transcript # Save full transcript for subtitles
@@ -1070,14 +1073,14 @@ def run_pipeline(args, env_override=None):
             metadata_file = os.path.join(output_dir, f"{video_title}_metadata.json")
             with open(metadata_file, 'w') as f:
                 json.dump(clips_data, f, indent=2)
-            print(f"   Saved metadata to {metadata_file}")
+            log(f"   Saved metadata to {metadata_file}")
 
             # 5. Process each clip
             for i, clip in enumerate(clips_data['shorts']):
                 start = clip['start']
                 end = clip['end']
-                print(f"\n🎬 Processing Clip {i+1}: {start}s - {end}s")
-                print(f"   Title: {clip.get('video_title_for_youtube_short', 'No Title')}")
+                log(f"\n🎬 Processing Clip {i+1}: {start}s - {end}s")
+                log(f"   Title: {clip.get('video_title_for_youtube_short', 'No Title')}")
                 
                 # Cut clip
                 clip_filename = f"{video_title}_clip_{i+1}.mp4"
@@ -1101,20 +1104,16 @@ def run_pipeline(args, env_override=None):
                 success = process_video_to_vertical(clip_temp_path, clip_final_path)
                 
                 if success:
-                    print(f"   ✅ Clip {i+1} ready: {clip_final_path}")
+                    log(f"   ✅ Clip {i+1} ready: {clip_final_path}")
                 
                 # Clean up temp cut
                 if os.path.exists(clip_temp_path):
                     os.remove(clip_temp_path)
 
-    # Clean up original if requested
-    # (Disabled so that Enhance mode can use the original video later)
-    # if args.url and not args.keep_original and os.path.exists(input_video):
-    #     os.remove(input_video)
-    #     print(f"🗑️  Cleaned up downloaded video.")
+
 
     total_time = time.time() - script_start_time
-    print(f"\n⏱️  Total execution time: {total_time:.2f}s")
+    log(f"\n⏱️  Total execution time: {total_time:.2f}s")
 
 if __name__ == '__main__':
     import argparse

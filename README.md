@@ -64,7 +64,7 @@ docker compose up --build
 
 **Langkah 4: Buka di Browser**
 Buka **`http://localhost:5175`** di browser kesayanganmu.
-1. Masuk ke menu **Settings** dan masukkan API Key kamu (Gemini, fal.ai, ElevenLabs, dll).
+1. Masuk ke menu **Settings** dan masukkan API Key kamu (Gemini, HF Token, dll).
 2. Langsung mulai *upload* video panjangmu atau bikin video UGC AI dalam hitungan menit!
 
 ---
@@ -74,7 +74,7 @@ Buka **`http://localhost:5175`** di browser kesayanganmu.
 Aplikasi ini dibangun menggunakan teknologi modern yang *powerful*:
 - **Backend:** Python 3.11, FastAPI, FFmpeg, OpenCV, YOLOv8, MediaPipe, Faster-Whisper.
 - **Frontend:** React 18, Vite, Tailwind CSS.
-- **AI Engine:** Google Gemini, fal.ai, ElevenLabs.
+- **AI Engine:** Google Gemini, F5-TTS, LivePortrait.
 - **Infrastruktur:** Docker & AWS S3.
 
 ---

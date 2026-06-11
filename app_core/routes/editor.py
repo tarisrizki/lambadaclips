@@ -12,12 +12,13 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
 
-from app_core.globals import jobs, enhance_jobs, _job_dir, _video_url, _job_media
+from app_core.executors import cpu_executor
+from app_core.globals import jobs, enhance_jobs
+from app_core.utils import _job_dir, _video_url, _job_media, update_clip_url
 from app_core.paths import safe_filename
-from app_core.utils import update_clip_url
 from editor import VideoEditor
 from subtitles import add_hook_to_video
-from fishaudio import get_supported_languages, dub_video
+
 
 router = APIRouter()
 
@@ -101,7 +102,7 @@ async def edit_clip(
                     os.remove(safe_input_path)
 
         loop = asyncio.get_running_loop()
-        plan = await loop.run_in_executor(None, run_edit)
+        plan = await loop.run_in_executor(cpu_executor, run_edit)
         new_video_url = update_clip_url(req.job_id, req.clip_index, edited_filename)
         
         return {
@@ -191,7 +192,7 @@ async def enhance_clip(req: EnhanceRequest):
             print(f"❌ Enhance exception: {e}")
 
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, run_enhance)
+    loop.run_in_executor(cpu_executor, run_enhance)
     
     return EnhanceResponse(enhance_id=enhance_id, status="processing")
 
@@ -253,7 +254,7 @@ async def add_hook(req: HookRequest):
              add_hook_to_video(input_path, req.text, output_path, position=req.position, font_scale=font_scale)
         
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run_hook)
+        await loop.run_in_executor(cpu_executor, run_hook)
         
     except Exception as e:
         print(f"❌ Hook Error: {e}")
@@ -275,67 +276,14 @@ class TranslateRequest(BaseModel):
 
 @router.get("/api/translate/languages")
 async def get_languages():
-    return {"languages": get_supported_languages()}
+    return {"languages": []}
 
 @router.post("/api/translate")
 async def translate_clip(
     req: TranslateRequest,
-    x_fishaudio_key: Optional[str] = Header(None, alias="X-FishAudio-Key")
 ):
-    if not x_fishaudio_key:
-        raise HTTPException(status_code=400, detail="Missing X-FishAudio-Key header")
-
-    if req.job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    job = jobs[req.job_id]
-    output_dir = _job_dir(req.job_id)
-    json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
-
-    if not json_files:
-        raise HTTPException(status_code=404, detail="Metadata not found")
-
-    with open(json_files[0], 'r') as f:
-        data = json.load(f)
-
-    clips = data.get('shorts', [])
-    if req.clip_index >= len(clips):
-        raise HTTPException(status_code=404, detail="Clip not found")
-
-    clip_data = clips[req.clip_index]
-
-    if req.input_filename:
-        filename = safe_filename(req.input_filename)
-    else:
-        filename = clip_data.get('video_url', '').split('/')[-1].split('?')[0]
-        if not filename:
-            raise HTTPException(status_code=400, detail='Missing video filename')
-            
-    input_path = os.path.join(output_dir, filename)
-    if not os.path.exists(input_path):
-        raise HTTPException(status_code=404, detail=f"Video file not found: {input_path}")
-        
-    output_filename = f"translated_{filename}"
-    output_path = os.path.join(output_dir, output_filename)
-    
-    try:
-        def run_translation():
-            # Not writing the full dub_video logic here to save lines, 
-            # assuming it exists in fishaudio.py
-            return dub_video(x_fishaudio_key, input_path, req.target_language, output_path)
-            
-        loop = asyncio.get_running_loop()
-        success = await loop.run_in_executor(None, run_translation)
-        
-        if not success:
-            raise Exception("Dubbing process returned failure.")
-            
-    except Exception as e:
-        print(f"❌ Translation Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-        
-    new_video_url = update_clip_url(req.job_id, req.clip_index, output_filename)
-    return {"success": True, "new_video_url": new_video_url}
+    # Translation feature is currently disabled
+    raise HTTPException(status_code=501, detail="Translation feature is not available. This feature is currently disabled.")
 
 class EffectsGenerateRequest(BaseModel):
     job_id: str
@@ -424,7 +372,7 @@ async def generate_effects_config(
                     os.remove(safe_input_path)
 
         loop = asyncio.get_running_loop()
-        effects_config = await loop.run_in_executor(None, run_effects_generation)
+        effects_config = await loop.run_in_executor(cpu_executor, run_effects_generation)
 
         if effects_config is None:
             raise HTTPException(status_code=500, detail="Failed to generate effects config from Gemini")

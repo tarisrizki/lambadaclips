@@ -275,7 +275,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
             console.log('[Translate] API Key available:', !!apiKey);
 
             if (!apiKey) {
-                throw new Error("Fish Audio API Key is missing. Please set it in Settings.");
+                throw new Error("Translation feature is currently not available.");
             }
 
             const requestBody = {

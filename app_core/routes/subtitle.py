@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app_core.executors import cpu_executor
 from app_core.globals import jobs, _job_dir, _video_url
 from app_core.paths import safe_filename
 from app_core.utils import update_clip_url
@@ -124,7 +125,7 @@ async def add_subtitles(req: SubtitleRequest):
                 return generate_srt_from_video(input_path, srt_path)
 
             loop = asyncio.get_running_loop()
-            success = await loop.run_in_executor(None, run_transcribe_srt)
+            success = await loop.run_in_executor(cpu_executor, run_transcribe_srt)
         else:
             success = generate_srt(transcript, clip_data['start'], clip_data['end'], srt_path)
 
@@ -139,7 +140,7 @@ async def add_subtitles(req: SubtitleRequest):
                            bg_color=req.bg_color, bg_opacity=req.bg_opacity)
         
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run_burn)
+        await loop.run_in_executor(cpu_executor, run_burn)
         
     except Exception as e:
         print(f"❌ Subtitle Error: {e}")

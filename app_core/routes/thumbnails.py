@@ -9,7 +9,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Header, Request, Form, File, UploadFile, BackgroundTasks
 from pydantic import BaseModel
 
-from app_core.globals import thumbnail_sessions, publish_jobs
+from app_core.globals import thumbnail_sessions, publish_jobs, thumbnail_sessions_runtime
+from app_core.executors import cpu_executor, io_executor
 from app_core.config import DISABLE_YOUTUBE_URL, UPLOAD_DIR, MAX_FILE_SIZE_MB, OUTPUT_DIR, THUMBNAILS_DIR
 from app_core.paths import safe_join, safe_upload_suffix, validate_uuid
 from app_core.utils import validate_youtube_url, save_upload_limited, _thumbnail_url
@@ -44,9 +45,10 @@ async def thumbnail_upload(
             max_bytes=MAX_FILE_SIZE_MB * 1024 * 1024,
         )
 
+    thumbnail_sessions_runtime[session_id] = transcript_event
+
     thumbnail_sessions[session_id] = {
         "video_path": video_path,
-        "transcript_event": transcript_event,
         "transcript_ready": False,
         "transcript": None,
         "transcript_segments": [],
@@ -64,12 +66,12 @@ async def thumbnail_upload(
             if not vpath and url:
                 from main import download_youtube_video
                 loop = asyncio.get_running_loop()
-                vpath, _ = await loop.run_in_executor(None, download_youtube_video, url, UPLOAD_DIR)
+                vpath, _ = await loop.run_in_executor(io_executor, download_youtube_video, url, UPLOAD_DIR)
                 thumbnail_sessions[session_id]["video_path"] = vpath
 
             from main import transcribe_video
             loop = asyncio.get_running_loop()
-            transcript = await loop.run_in_executor(None, transcribe_video, vpath)
+            transcript = await loop.run_in_executor(cpu_executor, transcribe_video, vpath)
             segments = transcript.get("segments", [])
             duration = segments[-1]["end"] if segments else 0
 
@@ -109,7 +111,7 @@ async def thumbnail_analyze(
     if session_id and session_id in thumbnail_sessions:
         session = thumbnail_sessions[session_id]
 
-        transcript_event = session.get("transcript_event")
+        transcript_event = thumbnail_sessions_runtime.get(session_id)
         if transcript_event:
             print(f"⏳ [Thumbnail] Waiting for background Whisper to finish...")
             await transcript_event.wait()
@@ -134,7 +136,7 @@ async def thumbnail_analyze(
                 raise HTTPException(status_code=403, detail="YouTube URL ingest is disabled")
             validate_youtube_url(url)
             from main import download_youtube_video
-            video_path, _ = await asyncio.to_thread(download_youtube_video, url, UPLOAD_DIR)
+            video_path, _ = await loop.run_in_executor(io_executor, download_youtube_video, url, UPLOAD_DIR)
         else:
             video_path = safe_join(
                 UPLOAD_DIR, f"thumb_{session_id}{safe_upload_suffix(file.filename)}"
@@ -147,7 +149,7 @@ async def thumbnail_analyze(
 
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, analyze_video_for_titles, api_key, video_path, pre_transcript)
+        result = await loop.run_in_executor(cpu_executor, analyze_video_for_titles, api_key, video_path, pre_transcript)
 
         if session_id not in thumbnail_sessions:
             thumbnail_sessions[session_id] = {}
@@ -212,7 +214,7 @@ async def thumbnail_titles(
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
-            None,
+            cpu_executor,
             refine_titles,
             api_key,
             session["context"],
@@ -275,7 +277,7 @@ async def thumbnail_generate(
 
         loop = asyncio.get_running_loop()
         thumbnails = await loop.run_in_executor(
-            None,
+            cpu_executor,
             generate_thumbnail,
             api_key,
             title,
@@ -327,7 +329,7 @@ async def thumbnail_describe(
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
-            None,
+            cpu_executor,
             generate_youtube_description,
             api_key,
             req.title,

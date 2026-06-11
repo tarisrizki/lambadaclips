@@ -592,7 +592,7 @@ function App() {
                   <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded text-blue-400 uppercase tracking-wider">Docker</span>
                 </div>
                 <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
-                  Gunakan server lokal <strong>F5-TTS</strong> (Docker) sebagai pengganti Fish Audio. Kualitas lebih tinggi dan 100% gratis, tapi membutuhkan GPU.
+                  Gunakan server lokal <strong>F5-TTS</strong> (Docker) untuk voice generation. Kualitas tinggi dan 100% gratis, tapi membutuhkan GPU.
                 </p>
                 <div className="space-y-4">
                   <div>
@@ -626,7 +626,7 @@ function App() {
                     />
                   </div>
                   <p className="text-xs text-zinc-600 italic">
-                    Jika F5-TTS Server URL diisi, generator akan menggunakannya dan mengabaikan Fish Audio.
+                    F5-TTS Server URL wajib diisi untuk generate voiceover pada SaaS Shorts.
                   </p>
                 </div>
               </div>

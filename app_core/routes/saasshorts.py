@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app_core.globals import saas_jobs, saas_queue, saas_concurrency_semaphore
+from app_core.executors import cpu_executor, io_executor
 from app_core.config import OUTPUT_DIR
 from urllib.parse import urlparse
 from app_core.paths import safe_join, validate_uuid, safe_filename
@@ -20,7 +21,7 @@ from saasshorts import (
     analyze_saas,
     generate_scripts,
     generate_actor_images,
-    generate_saas_video,
+    generate_full_video,
 )
 from api_social import upload_video, upload_actor_to_s3, list_video_gallery, list_actor_gallery
 
@@ -75,7 +76,7 @@ async def saasshorts_analyze(
                 "web_research": web_research,
             }
 
-        result = await loop.run_in_executor(None, run_analysis)
+        result = await loop.run_in_executor(cpu_executor, run_analysis)
         return result
 
     except Exception as e:
@@ -125,7 +126,7 @@ async def saasshorts_actor_options(
         loop = asyncio.get_running_loop()
         import functools
         paths = await loop.run_in_executor(
-            None,
+            cpu_executor,
             functools.partial(
                 generate_actor_images,
                 req.actor_description, out_dir, "actor", req.num_options,
@@ -156,7 +157,7 @@ async def saasshorts_actor_options(
 async def saasshorts_video_gallery(limit: int = 50):
     try:
         loop = asyncio.get_running_loop()
-        videos = await loop.run_in_executor(None, list_video_gallery, limit)
+        videos = await loop.run_in_executor(io_executor, list_video_gallery, limit)
         return {"videos": videos, "total": len(videos)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -215,7 +216,7 @@ async def saasshorts_post_to_socials(req: SaaSPostRequest):
 async def gallery_html_page():
     import html as html_mod
     loop = asyncio.get_running_loop()
-    videos = await loop.run_in_executor(None, list_video_gallery, 100)
+    videos = await loop.run_in_executor(io_executor, list_video_gallery, 100)
 
     cards_html = ""
     ld_items = []
@@ -285,7 +286,7 @@ h1{{font-size:28px;font-weight:700;padding:40px 20px 0;text-align:center}}
 async def video_html_page(video_id: str):
     import html as html_mod
     loop = asyncio.get_running_loop()
-    videos = await loop.run_in_executor(None, list_video_gallery, 200)
+    videos = await loop.run_in_executor(io_executor, list_video_gallery, 200)
     meta = next((v for v in videos if v.get("video_id") == video_id), None)
     if not meta:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -366,7 +367,7 @@ h1{{font-size:22px;font-weight:700;margin-bottom:8px}}
 async def saasshorts_actor_gallery():
     try:
         loop = asyncio.get_running_loop()
-        images = await loop.run_in_executor(None, list_actor_gallery)
+        images = await loop.run_in_executor(io_executor, list_actor_gallery)
         return {"images": images}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -452,27 +453,32 @@ async def process_saas_job(job_id: str):
             job["logs"].append(msg)
             print(f"[SaaS Worker {job_id}] {msg}")
 
+        config = {
+            "voice_id": req_data.get("voice_id", ""),
+            "actor_description": req_data.get("actor_description"),
+            "selected_actor_path": req_data.get("selected_actor_url"),
+            "hf_token": hf_token,
+            "video_mode": req_data.get("video_mode", "lowcost"),
+            "f5tts_url": req_data.get("f5tts_url"),
+            "f5tts_ref_text": req_data.get("f5tts_ref_text"),
+            "f5tts_ref_audio": req_data.get("f5tts_ref_audio"),
+            "colab_url": req_data.get("colab_url"),
+            "sdxl_cloud_url": req_data.get("sdxl_cloud_url"),
+            "broll_cloud_url": req_data.get("broll_cloud_url"),
+            "lipsync_cloud_url": req_data.get("lipsync_cloud_url"),
+        }
+
         loop = asyncio.get_running_loop()
-        video_path = await loop.run_in_executor(
-            None,
-            generate_saas_video,
+        result = await loop.run_in_executor(
+            cpu_executor,
+            generate_full_video,
             req_data["script"],
-            req_data["voice_id"],
-            req_data.get("actor_description"),
-            req_data.get("selected_actor_url"),
+            config,
             out_dir,
-            hf_token,
             log_cb,
-            req_data.get("video_mode", "lowcost"),
-            req_data.get("f5tts_url"),
-            req_data.get("f5tts_ref_text"),
-            req_data.get("f5tts_ref_audio"),
-            req_data.get("colab_url"),
-            req_data.get("sdxl_cloud_url"),
-            req_data.get("broll_cloud_url"),
-            req_data.get("lipsync_cloud_url"),
         )
 
+        video_path = result.get("video_path", "")
         filename = os.path.basename(video_path)
         video_url = _named_video_url(f"saas_{job_id}", filename)
 

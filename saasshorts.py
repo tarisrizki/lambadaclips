@@ -5,10 +5,10 @@ Generates viral TikTok/Instagram Reels content from a SaaS URL.
 Pipeline:
   1. Scrape & analyze SaaS website (Gemini)
   2. Generate video scripts (hook → problem → solution → CTA)
-  3. Generate AI actor portrait (Flux Pro via fal.ai)
-  4. Generate voiceover (ElevenLabs TTS)
-  5. Generate talking head video (Kling Avatar v2 via fal.ai)
-  6. Generate b-roll clips (Kling v2.6 via fal.ai)
+  3. Generate AI actor portrait (Cloud API / SDXL)
+  4. Generate voiceover (F5-TTS)
+  5. Generate talking head video (LivePortrait via HF/Colab)
+  6. Generate b-roll clips (Cloud API)
   7. Composite final video with subtitles (FFmpeg)
 """
 
@@ -39,11 +39,7 @@ def generate_with_retry(client, **kwargs):
 
 
 
-ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1"
-FAL_QUEUE_BASE = "https://queue.fal.run"
 
-# Default ElevenLabs voices (name → voice_id)
-DEFAULT_VOICES = {}
 
 
 from app_core.config import GEMINI_MODEL_LITE
@@ -565,132 +561,12 @@ RULES:
 # Phase 2: Asset Generation
 # ═══════════════════════════════════════════════════════════════════════
 
-def _fal_run(model_id: str, input_data: dict, fal_key: str, timeout: int = 600) -> dict:
-    """
-    Submit a job to fal.ai queue, poll for completion, return result.
-    Uses the URLs returned by the submit response (as per fal.ai docs).
-    """
-    headers = {
-        "Authorization": f"Key {fal_key}",
-        "Content-Type": "application/json",
-    }
-
-    # ── Step 1: Submit to queue ──
-    submit_url = f"{FAL_QUEUE_BASE}/{model_id}"
-    print(f"[fal.ai] Submitting to {submit_url}...")
-
-    with httpx.Client(timeout=120.0) as client:
-        resp = client.post(submit_url, headers=headers, json=input_data)
-
-    if resp.status_code >= 400:
-        print(f"[fal.ai] Submit error: {resp.text[:500]}")
-        raise Exception(f"fal.ai error ({resp.status_code}): {resp.text[:300]}")
-
-    try:
-        submit_data = resp.json()
-    except json.JSONDecodeError:
-        raise Exception(f"fal.ai invalid JSON: {resp.text[:300]}")
-
-    request_id = submit_data.get("request_id")
-    if not request_id:
-        # Synchronous result (no queue)
-        return submit_data
-
-    # Use the URLs from the submit response (guaranteed correct per docs)
-    status_url = submit_data.get("status_url", f"{FAL_QUEUE_BASE}/{model_id}/requests/{request_id}/status")
-    response_url = submit_data.get("response_url", f"{FAL_QUEUE_BASE}/{model_id}/requests/{request_id}")
-
-    print(f"[fal.ai] Queued: {request_id}")
-    print(f"[fal.ai] Status URL: {status_url}")
-
-    # ── Step 2: Poll for completion ──
-    poll_headers = {"Authorization": f"Key {fal_key}"}
-    start = time.time()
-
-    while time.time() - start < timeout:
-        elapsed = int(time.time() - start)
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                poll_resp = client.get(f"{status_url}?logs=1", headers=poll_headers)
-            status_data = poll_resp.json()
-        except Exception as e:
-            print(f"[fal.ai] Poll error (retrying): {e}")
-            time.sleep(5)
-            continue
-
-        status = status_data.get("status", "UNKNOWN")
-
-        if status == "COMPLETED":
-            print(f"[fal.ai] ✅ Completed in {elapsed}s! Fetching result...")
-            with httpx.Client(timeout=120.0) as client:
-                result_resp = client.get(response_url, headers=poll_headers)
-                return result_resp.json()
-
-        elif status in ("FAILED", "CANCELLED"):
-            error = status_data.get("error", "unknown error")
-            raise Exception(f"fal.ai job {status}: {error}")
-
-        # Log progress
-        queue_pos = status_data.get("queue_position", "")
-        pos_info = f" (pos: {queue_pos})" if queue_pos != "" else ""
-        print(f"[fal.ai] {model_id}: {status}{pos_info} ({elapsed}s)")
-        time.sleep(5)
-
-    raise Exception(f"fal.ai job timed out after {timeout}s for {model_id}")
-
-
-def _fal_upload_file(file_path: str, fal_key: str) -> str:
-    """Upload a local file to fal.ai CDN storage and return public URL."""
-    headers = {"Authorization": f"Key {fal_key}"}
-
-    filename = os.path.basename(file_path)
-    ext = os.path.splitext(filename)[1].lower()
-    content_types = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".mp3": "audio/mpeg",
-        ".wav": "audio/wav",
-        ".mp4": "video/mp4",
-        ".webp": "image/webp",
-    }
-    content_type = content_types.get(ext, "application/octet-stream")
-
-    # Initiate upload
-    with httpx.Client(timeout=30.0) as client:
-        resp = client.post(
-            "https://rest.alpha.fal.ai/storage/upload/initiate",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"file_name": filename, "content_type": content_type},
-        )
-        resp.raise_for_status()
-        upload_info = resp.json()
-
-    upload_url = upload_info["upload_url"]
-    file_url = upload_info["file_url"]
-
-    # Upload file content
-    with open(file_path, "rb") as f:
-        file_bytes = f.read()
-
-    with httpx.Client(timeout=120.0) as client:
-        resp = client.put(
-            upload_url,
-            content=file_bytes,
-            headers={"Content-Type": content_type},
-        )
-        resp.raise_for_status()
-
-    print(f"[fal.ai] Uploaded {filename} → {file_url}")
-    return file_url
-
-
 def generate_actor_images(
-    description: str, fal_key: str, output_dir: str, title_slug: str, num_options: int = 3,
+    description: str, output_dir: str, title_slug: str, num_options: int = 3,
     product_description: str = None,
 ) -> List[str]:
-    """Generate multiple hyper-realistic actor portrait options using Flux 2 Pro."""
-    print(f"[SaaSShorts] 🎨 Generating {num_options} actor image options (Flux 2 Pro)...")
+    """Generate multiple actor portrait options using Gemini image generation."""
+    print(f"[SaaSShorts] 🎨 Generating {num_options} actor image options (Gemini)...")
 
     # Clean description: strip scene/actions, keep only physical appearance
     clean_desc = description
@@ -710,31 +586,31 @@ def generate_actor_images(
 
     print(f"[SaaSShorts]   Prompt: {prompt[:120]}...{' (with product)' if product_description else ''}")
 
+    from google import genai
+    from app_core.config import GEMINI_MODEL_FAST
+
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    client = genai.Client(api_key=gemini_key)
+
     paths = []
-    # Flux 2 Pro — #1 for photorealistic faces
+
     def _gen_one(i):
-        result = _fal_run(
-            "fal-ai/flux-2-pro",
-            {
-                "prompt": prompt,
-                "image_size": "portrait_4_3",
-                "safety_tolerance": 5,
-                "seed": random.randint(0, 999999),
-            },
-            fal_key,
-            timeout=300,
+        response = generate_with_retry(
+            client,
+            model=GEMINI_MODEL_FAST,
+            contents=prompt,
+            config=genai.types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"],
+            ),
         )
-        images = result.get("images") or result.get("output", [])
-        if not images:
-            raise Exception(f"No images in actor result: {list(result.keys())}")
-        img_url = images[0]["url"] if isinstance(images[0], dict) else images[0]
-        img_path = os.path.join(output_dir, f"{title_slug}_actor_option_{i}.png")
-        with httpx.Client(timeout=60.0) as client:
-            img_resp = client.get(img_url)
-            with open(img_path, "wb") as f:
-                f.write(img_resp.content)
-        print(f"[SaaSShorts] ✅ Actor option {i+1}: {img_path}")
-        return img_path
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                img_path = os.path.join(output_dir, f"{title_slug}_actor_option_{i}.png")
+                with open(img_path, "wb") as f:
+                    f.write(part.inline_data.data)
+                print(f"[SaaSShorts] ✅ Actor option {i+1}: {img_path}")
+                return img_path
+        raise Exception(f"No image generated for actor option {i+1}")
 
     with ThreadPoolExecutor(max_workers=num_options) as executor:
         futures = [executor.submit(_gen_one, i) for i in range(num_options)]
@@ -762,95 +638,41 @@ def generate_actor_image(prompt: str, cloud_url: str, output_path: str) -> str:
 
 def generate_voiceover(
     text: str,
-    fishaudio_key: str,
     output_path: str,
     voice_id: str = "",
     f5tts_url: str = "",
     f5tts_ref_text: str = "",
     f5tts_ref_audio: str = "",
 ) -> str:
-    """Generate voiceover audio using F5-TTS or Fish Audio TTS."""
-    if f5tts_url:
-        print(f"[SaaSShorts] 🎙️ Generating voiceover ({len(text)} chars) with F5-TTS...")
-        data = {
-            "text": text,
-            "ref_text": f5tts_ref_text,
-        }
-        files = {}
-        if f5tts_ref_audio and os.path.exists(f5tts_ref_audio):
-            files["ref_audio"] = open(f5tts_ref_audio, "rb")
-            
-        try:
-            with httpx.Client(timeout=300.0) as client:
-                resp = client.post(f5tts_url, data=data, files=files if files else None)
-                if resp.status_code != 200:
-                    raise Exception(f"F5-TTS error ({resp.status_code}): {resp.text}")
-                with open(output_path, "wb") as f:
-                    f.write(resp.content)
-            print(f"[SaaSShorts] ✅ Voiceover (F5-TTS): {output_path}")
-            return output_path
-        finally:
-            if "ref_audio" in files:
-                files["ref_audio"].close()
+    """Generate voiceover audio using F5-TTS."""
+    if not f5tts_url:
+        raise Exception(
+            "F5-TTS Server URL is required for voiceover generation. "
+            "Configure it in Settings → Local AI Voice (F5-TTS)."
+        )
 
-    print(f"[SaaSShorts] 🎙️ Generating voiceover ({len(text)} chars) with Fish Audio...")
-
-    url = "https://api.fish.audio/v1/tts"
-
-    headers = {
-        "Authorization": f"Bearer {fishaudio_key}",
-        "Content-Type": "application/json",
-    }
-
-    body = {
+    print(f"[SaaSShorts] 🎙️ Generating voiceover ({len(text)} chars) with F5-TTS...")
+    data = {
         "text": text,
-        "format": "mp3"
+        "ref_text": f5tts_ref_text,
     }
-    
-    if voice_id:
-        body["reference_id"] = voice_id
-
-    with httpx.Client(timeout=120.0) as client:
-        resp = client.post(url, headers=headers, json=body)
-        if resp.status_code != 200:
-            raise Exception(f"Fish Audio TTS error ({resp.status_code}): {resp.text}")
-
-        with open(output_path, "wb") as f:
-            f.write(resp.content)
-
-    print(f"[SaaSShorts] ✅ Voiceover: {output_path}")
-    return output_path
-
-
-def get_fishaudio_voices(fishaudio_key: str) -> list:
-    """Fetch available voices from Fish Audio."""
-    url = "https://api.fish.audio/model?page_size=30&page_number=1"
-    headers = {"Authorization": f"Bearer {fishaudio_key}"}
-
-    with httpx.Client(timeout=15.0) as client:
-        try:
-            resp = client.get(url, headers=headers)
+    files = {}
+    if f5tts_ref_audio and os.path.exists(f5tts_ref_audio):
+        files["ref_audio"] = open(f5tts_ref_audio, "rb")
+        
+    try:
+        with httpx.Client(timeout=300.0) as client:
+            resp = client.post(f5tts_url, data=data, files=files if files else None)
             if resp.status_code != 200:
-                return []
-            data = resp.json()
-        except Exception:
-            return []
+                raise Exception(f"F5-TTS error ({resp.status_code}): {resp.text}")
+            with open(output_path, "wb") as f:
+                f.write(resp.content)
+        print(f"[SaaSShorts] ✅ Voiceover (F5-TTS): {output_path}")
+        return output_path
+    finally:
+        if "ref_audio" in files:
+            files["ref_audio"].close()
 
-    voices = []
-    items = data.get("items", []) if isinstance(data, dict) else data
-    if not isinstance(items, list):
-        items = []
-
-    for v in items:
-        voices.append({
-            "voice_id": v.get("_id", v.get("id", "")),
-            "name": v.get("title", v.get("name", "Unknown Voice")),
-            "category": "Fish Audio",
-            "labels": {},
-            "preview_url": "",
-        })
-
-    return voices
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -911,11 +733,10 @@ def generate_talking_head_lowcost(
     output_path: str,
 ) -> str:
     """
-    Low-cost talking head: LivePortrait (HF/Colab) -> fallback to Hailuo+VEED.
+    Low-cost talking head: LivePortrait (HF/Colab).
     """
     hf_token = config.get("hf_token")
     colab_url = config.get("colab_url")
-    fal_key = config.get("fal_key")
 
     print(f"[SaaSShorts] 🗣️ Generating talking head...")
 
@@ -935,81 +756,18 @@ def generate_talking_head_lowcost(
             print(f"[SaaSShorts] ✅ Talking head (Colab): {output_path}")
             return output_path
         except Exception as e:
-            print(f"[SaaSShorts] ⚠️ Colab LivePortrait failed: {e}. Falling back...")
+            print(f"[SaaSShorts] ⚠️ Colab LivePortrait failed: {e}.")
 
-    # 3. Try Fal.ai Hailuo+Veed (Last Resort)
-    if not fal_key:
-        raise Exception("LivePortrait (HF/Colab) failed and no fal.ai key provided for fallback.")
-    
-    print(f"[SaaSShorts] 🗣️ Falling back to Hailuo 2.3 Fast img2video → VEED Lipsync...")
-    # Cache the Hailuo clip so retries don't re-generate it
-    hailuo_cache_path = output_path.replace(".mp4", "_hailuo_cache.mp4")
-
-    if os.path.exists(hailuo_cache_path) and os.path.getsize(hailuo_cache_path) > 0:
-        print(f"[SaaSShorts]   Hailuo clip cached, skipping generation.")
-        hailuo_video_url = _fal_upload_file(hailuo_cache_path, fal_key)
-    else:
-        image_url = _fal_upload_file(image_path, fal_key)
-
-        hailuo_result = _fal_run(
-            "fal-ai/minimax/hailuo-2.3-fast/standard/image-to-video",
-            {
-                "image_url": image_url,
-                "prompt": (
-                    "Person talking to camera, subtle head nods and natural micro-expressions. "
-                    "Gentle head movement, slight shoulder sway. Eye contact with camera. "
-                    "Natural blinking. Soft ambient lighting. Smooth cinematic motion."
-                ),
-            },
-            fal_key,
-            timeout=300,
-        )
-
-        print(f"[SaaSShorts]   Hailuo response keys: {list(hailuo_result.keys())}")
-        if "video" in hailuo_result:
-            hailuo_video_url = hailuo_result["video"]["url"] if isinstance(hailuo_result["video"], dict) else hailuo_result["video"]
-        elif "video_url" in hailuo_result:
-            hailuo_video_url = hailuo_result["video_url"]
-        elif "output" in hailuo_result:
-            hailuo_video_url = hailuo_result["output"]["url"] if isinstance(hailuo_result["output"], dict) else hailuo_result["output"]
-        else:
-            raise Exception(f"No video in Hailuo result: {hailuo_result}")
-
-        # Save Hailuo clip locally for retry cache
-        with httpx.Client(timeout=180.0) as client:
-            vid_resp = client.get(hailuo_video_url)
-            with open(hailuo_cache_path, "wb") as f:
-                f.write(vid_resp.content)
-
-        print(f"[SaaSShorts]   Hailuo 2.3 Fast 6s clip ready (cached for retry).")
-
-    # Step 2: Upload audio for lip-sync
-    audio_url = _fal_upload_file(audio_path, fal_key)
-
-    # Step 3: VEED Lipsync — high quality lip-sync with loop ($0.20 for 30s)
-    lipsync_result = _fal_run(
-        "veed/lipsync",
-        {
-            "video_url": hailuo_video_url,
-            "audio_url": audio_url,
-        },
-        fal_key,
-        timeout=900,
+    # No providers available
+    providers = []
+    if not hf_token:
+        providers.append("HF Token")
+    if not colab_url:
+        providers.append("Colab URL")
+    raise Exception(
+        f"Talking head generation failed. Missing: {', '.join(providers)}. "
+        "Configure Hugging Face Token or Colab URL in Settings."
     )
-
-    print(f"[SaaSShorts]   VEED Lipsync response keys: {list(lipsync_result.keys())}")
-    if "video" in lipsync_result:
-        lipsync_video_url = lipsync_result["video"]["url"] if isinstance(lipsync_result["video"], dict) else lipsync_result["video"]
-    else:
-        raise Exception(f"No video in VEED Lipsync result: {lipsync_result}")
-
-    with httpx.Client(timeout=180.0) as client:
-        vid_resp = client.get(lipsync_video_url)
-        with open(output_path, "wb") as f:
-            f.write(vid_resp.content)
-
-    print(f"[SaaSShorts] ✅ Talking head (low cost): {output_path}")
-    return output_path
 
 
 def generate_broll(prompt: str, cloud_url: str, output_path: str) -> str:
@@ -1309,8 +1067,10 @@ def generate_full_video(
     Args:
         script: A single script object from generate_scripts()
         config: {
-            "fal_key": str,
-            "fishaudio_key": str,
+            "sdxl_cloud_url": str,
+            "lipsync_cloud_url": str,
+            "broll_cloud_url": str,
+            "f5tts_url": str,
             "voice_id": str (optional),
             "actor_description": str (optional, overrides script),
         }
@@ -1370,7 +1130,6 @@ def generate_full_video(
             future_voice = executor.submit(
                 generate_voiceover, 
                 full_narration, 
-                "", 
                 audio_path, 
                 voice_id,
                 config.get("f5tts_url", ""),
