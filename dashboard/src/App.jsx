@@ -10,7 +10,7 @@ import ThumbnailStudio from './components/ThumbnailStudio';
 import SaaShortsTab from './components/SaaShortsTab';
 import UGCGallery from './components/UGCGallery';
 import ScheduleWeekModal from './components/ScheduleWeekModal';
-import { getApiUrl } from './config';
+import { API_ACCESS_KEY_STORAGE_KEY, getApiUrl } from './config';
 
 // Enhanced "Encryption" using XOR + Base64 with a Salt
 // This is better than plain Base64 but still client-side.
@@ -136,6 +136,9 @@ const pollJob = async (jobId) => {
 
 function App() {
 
+  const [accessKey, setAccessKey] = useState(
+    localStorage.getItem(API_ACCESS_KEY_STORAGE_KEY) || ''
+  );
   const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_key') || '');
   // Social API State - Load encrypted or plain
   const [uploadPostKey, setUploadPostKey] = useState(() => {
@@ -143,12 +146,18 @@ function App() {
     if (stored) return decrypt(stored);
     return '';
   });
-  // Fish Audio API State - Load encrypted
-  const [fishAudioKey, setFishAudioKey] = useState(() => {
-    const stored = localStorage.getItem('fishAudioKey_v1');
-    if (stored) return decrypt(stored);
-    return '';
-  });
+
+
+  // Open-Source Cloud Models State
+  const [sdxlCloudUrl, setSdxlCloudUrl] = useState(() => localStorage.getItem('sdxlCloudUrl_v1') || '');
+  const [brollCloudUrl, setBrollCloudUrl] = useState(() => localStorage.getItem('brollCloudUrl_v1') || '');
+  const [lipsyncCloudUrl, setLipsyncCloudUrl] = useState(() => localStorage.getItem('lipsyncCloudUrl_v1') || '');
+
+  useEffect(() => {
+    localStorage.setItem('sdxlCloudUrl_v1', sdxlCloudUrl);
+    localStorage.setItem('brollCloudUrl_v1', brollCloudUrl);
+    localStorage.setItem('lipsyncCloudUrl_v1', lipsyncCloudUrl);
+  }, [sdxlCloudUrl, brollCloudUrl, lipsyncCloudUrl]);
 
   // F5-TTS State
   const [f5TtsUrl, setF5TtsUrl] = useState(() => localStorage.getItem('f5TtsUrl_v1') || 'http://localhost:8000/api/tts');
@@ -167,17 +176,19 @@ function App() {
   useEffect(() => {
     if (apiKey) localStorage.setItem('gemini_key', apiKey);
   }, [apiKey]);
+
+  useEffect(() => {
+    if (accessKey) {
+      localStorage.setItem(API_ACCESS_KEY_STORAGE_KEY, accessKey);
+    } else {
+      localStorage.removeItem(API_ACCESS_KEY_STORAGE_KEY);
+    }
+  }, [accessKey]);
   
   useEffect(() => {
     if (uploadPostKey) localStorage.setItem('uploadPostKey_v3', encrypt(uploadPostKey));
   }, [uploadPostKey]);
 
-  // fal.ai API State - Load encrypted
-  const [falKey, setFalKey] = useState(() => {
-    const stored = localStorage.getItem('falKey_v1');
-    if (stored) return decrypt(stored);
-    return '';
-  });
 
   const [uploadUserId, setUploadUserId] = useState(() => localStorage.getItem('uploadUserId') || '');
   const [userProfiles, setUserProfiles] = useState([]); // List of {username, connected: []}
@@ -269,11 +280,6 @@ function App() {
     }
   }, [uploadPostKey, uploadUserId]);
 
-  useEffect(() => {
-    if (fishAudioKey) {
-      localStorage.setItem('fishAudioKey_v1', encrypt(fishAudioKey));
-    }
-  }, [fishAudioKey]);
 
   useEffect(() => {
     localStorage.setItem('f5TtsUrl_v1', f5TtsUrl);
@@ -281,11 +287,6 @@ function App() {
     localStorage.setItem('f5TtsRefAudio_v1', f5TtsRefAudio);
   }, [f5TtsUrl, f5TtsRefText, f5TtsRefAudio]);
 
-  useEffect(() => {
-    if (falKey) {
-      localStorage.setItem('falKey_v1', encrypt(falKey));
-    }
-  }, [falKey]);
 
   useEffect(() => {
     if (hfToken) {
@@ -360,7 +361,7 @@ function App() {
   };
 
   const handleProcess = async (data) => {
-    if (!apiKey) {
+    if (!apiKey || !accessKey) {
       setShowKeyModal(true);
       return;
     }
@@ -501,28 +502,28 @@ function App() {
               />
             )}
 
-            {!apiKey && (
+            {(!apiKey || !accessKey) && (
               <button
                 onClick={() => setActiveTab('settings')}
                 className="text-xs text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-1 rounded-full border border-amber-500/30 transition-colors flex items-center gap-1.5"
                 title="Click to configure your API keys"
               >
                 <AlertTriangle size={12} />
-                Gemini API Key Missing
+                API Configuration Missing
               </button>
             )}
           </div>
         </header>
 
         {/* Persistent Missing Keys Banner — visible on every screen */}
-        {!apiKey && activeTab !== 'settings' && (
+        {(!apiKey || !accessKey) && activeTab !== 'settings' && (
           <div className="mx-6 mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between gap-4 shrink-0 animate-[fadeIn_0.3s_ease-out]">
             <div className="flex items-center gap-3 text-sm text-amber-200">
               <KeyRound size={16} className="shrink-0 text-amber-400" />
               <div>
                 <span className="font-semibold">Required API keys missing.</span>{' '}
                 <span className="text-amber-200/80">
-                  Set your Gemini API key to use LambadaClips.
+                  Set the server access key and Gemini API key to use LambadaClips.
                 </span>
               </div>
             </div>
@@ -560,6 +561,23 @@ function App() {
                 <div className="px-3 py-1 bg-green-500/10 border border-green-500/20 rounded-full text-[10px] text-green-400 font-medium flex items-center gap-2">
                   <Shield size={12} /> Privacy: keys only live in your browser (sent to backend just to process)
                 </div>
+              </div>
+              <div className={`glass-panel p-6 mb-8 ${!accessKey ? 'border-amber-500/30 ring-1 ring-amber-500/20' : ''}`}>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold">Server Access</h2>
+                  <span className="text-[10px] bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded text-amber-400 uppercase tracking-wider">Required</span>
+                </div>
+                <p className="text-xs text-zinc-500 mb-4 leading-relaxed">
+                  Masukkan nilai yang sama dengan <code>API_ACCESS_KEY</code> pada server.
+                  Key ini melindungi endpoint pemrosesan dari penggunaan tanpa izin.
+                </p>
+                <input
+                  type="password"
+                  value={accessKey}
+                  onChange={(event) => setAccessKey(event.target.value)}
+                  className="input-field w-full"
+                  placeholder="Server access key"
+                />
               </div>
               <KeyInput onKeySet={setApiKey} savedKey={apiKey} />
 
@@ -610,56 +628,6 @@ function App() {
                 </div>
               </div>
 
-              <div className="glass-panel p-6 mt-8">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold">Video Translation</h2>
-                  <span className="text-[10px] bg-white/5 border border-white/5 px-2 py-0.5 rounded text-zinc-500 uppercase tracking-wider">Optional</span>
-                </div>
-                <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
-                  Terjemahkan klip Anda ke berbagai bahasa menggunakan <strong>Fish Audio</strong> AI dubbing.
-                  Otomatis menerjemahkan suara sambil mempertahankan karakteristik suara asli.
-                </p>
-                <div className="space-y-4">
-                  <label className="block text-sm text-zinc-400">Fish Audio API Key</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="password"
-                      value={fishAudioKey}
-                      onChange={(e) => setFishAudioKey(e.target.value)}
-                      className="input-field"
-                      placeholder="sk_..."
-                    />
-                    <button
-                      onClick={() => {
-                        if (fishAudioKey) {
-                          localStorage.setItem('fishAudioKey_v1', encrypt(fishAudioKey));
-                          alert('Fish Audio API Key saved!');
-                        }
-                      }}
-                      className="btn-primary py-2 px-4 text-sm"
-                    >
-                      Save
-                    </button>
-                  </div>
-                  <p className="text-xs text-zinc-500 leading-relaxed">
-                    Dapatkan API key dari Fish Audio untuk mengaktifkan terjemahan video.
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <a href="https://fish.audio" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
-                        <span className="text-zinc-400 font-medium">1. Sign Up</span>
-                        <span className="text-[10px] text-zinc-600">Create account</span>
-                      </a>
-                      <a href="https://fish.audio/app/api-keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
-                        <span className="text-zinc-400 font-medium">2. API Key</span>
-                        <span className="text-[10px] text-zinc-600">Generate key</span>
-                      </a>
-                    </div>
-                    <br />
-                    <span className="text-zinc-600 italic">
-                      Key hanya disimpan di browser Anda. Hanya dikirim ke backend untuk memproses request, tidak pernah disimpan di server.
-                    </span>
-                  </p>
-                </div>
-              </div>
 
               <div className="glass-panel p-6 mt-8">
                 <div className="flex items-center justify-between mb-4">
@@ -706,104 +674,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="glass-panel p-6 mt-8">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold">AI Shorts (UGC Videos)</h2>
-                  <span className="text-[10px] bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded text-violet-400 uppercase tracking-wider">New</span>
-                </div>
-                <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
-                  Buat video ala UGC dengan AI actors untuk produk atau bisnis apa pun menggunakan <strong>fal.ai</strong>.
-                  Cukup deskripsikan produk atau paste URL. Membutuhkan API key fal.ai + Fish Audio.
-                </p>
-                <div className="space-y-4">
-                  <label className="block text-sm text-zinc-400">fal.ai API Key</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="password"
-                      value={falKey}
-                      onChange={(e) => setFalKey(e.target.value)}
-                      className="input-field"
-                      placeholder="fal_..."
-                    />
-                    <button
-                      onClick={() => {
-                        if (falKey) {
-                          localStorage.setItem('falKey_v1', encrypt(falKey));
-                          alert('fal.ai API Key saved!');
-                        }
-                      }}
-                      className="btn-primary py-2 px-4 text-sm"
-                    >
-                      Save
-                    </button>
-                  </div>
-                  <p className="text-xs text-zinc-500 leading-relaxed">
-                    Dapatkan API key dari fal.ai untuk mengaktifkan pembuatan video AI actor.
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <a href="https://fal.ai/dashboard/keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
-                        <span className="text-zinc-400 font-medium">1. Sign Up</span>
-                        <span className="text-[10px] text-zinc-600">Create fal.ai account</span>
-                      </a>
-                      <a href="https://fal.ai/dashboard/keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-white/5 rounded-lg hover:bg-white/5 transition-colors flex flex-col gap-1">
-                        <span className="text-zinc-400 font-medium">2. API Key</span>
-                        <span className="text-[10px] text-zinc-600">Generate key</span>
-                      </a>
-                    </div>
-                    <br />
-                    <span className="text-zinc-600 italic">
-                      Key hanya disimpan di browser Anda. Hanya dikirim ke backend untuk memproses request.
-                    </span>
-                  </p>
-                </div>
-              </div>
 
-              <div className="glass-panel p-6 mt-8">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold">LivePortrait (Gratis/Open Source)</h2>
-                  <span className="text-[10px] bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded text-green-400 uppercase tracking-wider">Alternative</span>
-                </div>
-                <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
-                  Gunakan model <strong>LivePortrait</strong> sebagai alternatif gratis pengganti Fal.ai. Prioritas akan diberikan ke Hugging Face (gratis). Jika server HF lambat/penuh, sistem akan menggunakan Colab Anda.
-                </p>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm text-zinc-400 mb-1">Hugging Face Token</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        value={hfToken}
-                        onChange={(e) => setHfToken(e.target.value)}
-                        className="input-field w-full"
-                        placeholder="hf_..."
-                      />
-                      <button
-                        onClick={() => {
-                          if (hfToken) {
-                            localStorage.setItem('hfToken_v1', encrypt(hfToken));
-                            alert('Hugging Face Token saved!');
-                          }
-                        }}
-                        className="btn-primary py-2 px-4 text-sm whitespace-nowrap"
-                      >
-                        Save
-                      </button>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm text-zinc-400 mb-1">Colab Backup URL (opsional)</label>
-                    <input
-                      type="text"
-                      value={colabUrl}
-                      onChange={(e) => setColabUrl(e.target.value)}
-                      className="input-field w-full"
-                      placeholder="https://xxx.loca.lt"
-                    />
-                    <p className="text-[10px] text-zinc-600 mt-1 italic">
-                      Gunakan skrip Google Colab (LivePortrait_Colab_Backend.ipynb) untuk mendapatkan URL ini saat HF sedang sibuk.
-                    </p>
-                  </div>
-                </div>
-              </div>
             </div>
           )}
 
@@ -811,8 +682,8 @@ function App() {
           {activeTab === 'saasshorts' && (
             <SaaShortsTab 
               geminiApiKey={apiKey} 
-              fishAudioKey={fishAudioKey} 
-              falKey={falKey} 
+               
+               
               hfToken={hfToken}
               colabUrl={colabUrl}
               uploadPostKey={uploadPostKey} 
@@ -820,6 +691,9 @@ function App() {
               f5TtsUrl={f5TtsUrl}
               f5TtsRefText={f5TtsRefText}
               f5TtsRefAudio={f5TtsRefAudio}
+              sdxlCloudUrl={sdxlCloudUrl}
+              brollCloudUrl={brollCloudUrl}
+              lipsyncCloudUrl={lipsyncCloudUrl}
             />
           )}
 
@@ -956,7 +830,7 @@ function App() {
                           uploadPostKey={uploadPostKey}
                           uploadUserId={uploadUserId}
                           geminiApiKey={apiKey}
-                          fishAudioKey={fishAudioKey}
+                          
                           onPlay={(time) => handleClipPlay(time)}
                           onPause={handleClipPause}
                         />

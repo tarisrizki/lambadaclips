@@ -22,7 +22,6 @@ from urllib.parse import urljoin
 from typing import Optional, List, Dict, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import time
 def generate_with_retry(client, **kwargs):
     max_retries = 3
     for attempt in range(max_retries):
@@ -743,31 +742,22 @@ def generate_actor_images(
 
     return sorted(paths)
 
-    paths = []
-    for i, img in enumerate(result.get("images", [])):
-        img_path = os.path.join(output_dir, f"{title_slug}_actor_option_{i}.png")
-        with httpx.Client(timeout=60.0) as client:
-            img_resp = client.get(img["url"])
-            with open(img_path, "wb") as f:
-                f.write(img_resp.content)
-        paths.append(img_path)
-        print(f"[SaaSShorts] ✅ Actor option {i+1}: {img_path}")
-
-    return paths
-
-
-def generate_actor_image(
-    description: str, fal_key: str, output_path: str
-) -> str:
-    """Generate a single actor image using Recraft V4."""
-    output_dir = os.path.dirname(output_path)
-    title_slug = os.path.basename(output_path).replace("_actor.png", "")
-    paths = generate_actor_images(description, fal_key, output_dir, title_slug, num_options=1)
-    if paths:
-        import shutil
-        shutil.move(paths[0], output_path)
-    return output_path
-
+def generate_actor_image(prompt: str, cloud_url: str, output_path: str) -> str:
+    """Call external Cloud API (e.g. SDXL on Colab) to generate actor image."""
+    import requests, base64
+    if not cloud_url: raise Exception("SDXL Cloud URL not provided.")
+    print(f"[SaaSShorts] 🎨 Generating actor image via Cloud API: {cloud_url}")
+    try:
+        res = requests.post(cloud_url.rstrip('/') + '/api/generate', json={"prompt": prompt}, timeout=120)
+        res.raise_for_status()
+        data = res.json()
+        if "image" in data:
+            img_data = base64.b64decode(data["image"])
+            with open(output_path, "wb") as f: f.write(img_data)
+            return output_path
+        raise Exception("Invalid response format from SDXL Cloud API")
+    except Exception as e:
+        raise Exception(f"SDXL Cloud API Error: {e}")
 
 def generate_voiceover(
     text: str,
@@ -866,46 +856,20 @@ def get_fishaudio_voices(fishaudio_key: str) -> list:
 # Phase 3: Video Generation
 # ═══════════════════════════════════════════════════════════════════════
 
-def generate_talking_head(
-    image_path: str,
-    audio_path: str,
-    fal_key: str,
-    output_path: str,
-) -> str:
-    """Generate talking head video using Kling Avatar v2 Standard on fal.ai."""
-    print(f"[SaaSShorts] 🗣️ Generating talking head (Kling Avatar v2)...")
-
-    # Upload image and audio to fal.ai CDN
-    image_url = _fal_upload_file(image_path, fal_key)
-    audio_url = _fal_upload_file(audio_path, fal_key)
-
-    result = _fal_run(
-        "fal-ai/kling-video/ai-avatar/v2/standard",
-        {
-            "image_url": image_url,
-            "audio_url": audio_url,
-            "prompt": (
-                "Natural UGC creator talking to camera. Expressive and energetic. "
-                "Subtle hand gestures to emphasize points. Slight head movements and nods. "
-                "Occasional leaning forward for emphasis. Relaxed shoulders, casual vibe. "
-                "Maintain eye contact with camera. Natural blinking and micro-expressions."
-            ),
-        },
-        fal_key,
-        timeout=600,
-    )
-
-    video_url = result["video"]["url"]
-
-    # Download video
-    with httpx.Client(timeout=180.0) as client:
-        vid_resp = client.get(video_url)
-        with open(output_path, "wb") as f:
-            f.write(vid_resp.content)
-
-    print(f"[SaaSShorts] ✅ Talking head: {output_path}")
-    return output_path
-
+def generate_talking_head(image_path: str, audio_path: str, cloud_url: str, output_path: str) -> str:
+    """Call external Cloud API (e.g. MuseTalk/SadTalker on Colab) for lip-sync."""
+    import requests
+    if not cloud_url: raise Exception("LipSync Cloud URL not provided.")
+    print(f"[SaaSShorts] 🗣️ Generating Lip-Sync via Cloud API: {cloud_url}")
+    try:
+        with open(image_path, 'rb') as f_img, open(audio_path, 'rb') as f_audio:
+            files = {'image': f_img, 'audio': f_audio}
+            res = requests.post(cloud_url.rstrip('/') + '/api/generate', files=files, timeout=300)
+            res.raise_for_status()
+            with open(output_path, 'wb') as f_out: f_out.write(res.content)
+            return output_path
+    except Exception as e:
+        raise Exception(f"LipSync Cloud API Error: {e}")
 
 def _liveportrait_hf_run(image_path: str, audio_path: str, hf_token: str, output_path: str) -> str:
     print(f"[SaaSShorts] 🗣️ Generating LivePortrait via Hugging Face Spaces (Zero-GPU)...")
@@ -1047,75 +1011,18 @@ def generate_talking_head_lowcost(
     return output_path
 
 
-def generate_broll(
-    prompt: str, fal_key: str, output_path: str, duration: str = "5"
-) -> str:
-    """
-    Generate b-roll: Recraft V4 image + Ken Burns zoom effect via FFmpeg.
-    """
-    print(f"[SaaSShorts] 🎬 Generating b-roll image + Ken Burns effect...")
-
-    dur_secs = int(duration)
-    img_path = output_path.replace(".mp4", "_img.png")
-
-    # Step 1: Generate a high-quality still image with Flux 2 Pro
-    result = _fal_run(
-        "fal-ai/flux-2-pro",
-        {
-            "prompt": f"{prompt}. Cinematic, shallow depth of field, professional photography.",
-            "image_size": "portrait_4_3",
-            "safety_tolerance": 5,
-        },
-        fal_key,
-        timeout=300,
-    )
-
-    # Flux 2 Pro returns images in "images" or "output" key
-    images = result.get("images") or result.get("output", [])
-    if not images:
-        raise Exception(f"No images in b-roll result: {list(result.keys())}")
-    img_url = images[0]["url"] if isinstance(images[0], dict) else images[0]
-
-    with httpx.Client(timeout=60.0) as client:
-        img_resp = client.get(img_url)
-        with open(img_path, "wb") as f:
-            f.write(img_resp.content)
-
-    # Step 2: Ken Burns effect — slow zoom in with slight pan
-    fps = 30
-    total_frames = dur_secs * fps
-    # Zoom from 1.0x to 1.15x over duration (subtle, cinematic)
-    zoompan_filter = (
-        f"scale=2160:3840,"
-        f"zoompan=z='1+0.15*on/{total_frames}':"
-        f"x='iw/2-(iw/zoom/2)+10*on/{total_frames}':"
-        f"y='ih/2-(ih/zoom/2)':"
-        f"d={total_frames}:s=1080x1920:fps={fps},"
-        f"setsar=1"
-    )
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1", "-i", img_path,          # Input 0: image
-        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",  # Input 1: silent audio
-        "-vf", zoompan_filter,
-        "-t", str(dur_secs),
-        "-map", "0:v", "-map", "1:a",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k",
-        "-shortest",
-        output_path,
-    ]
-
-    subprocess.run(cmd, check=True, capture_output=True)
-
-    # Cleanup temp image
-    if os.path.exists(img_path):
-        os.remove(img_path)
-
-    print(f"[SaaSShorts] ✅ B-roll (Ken Burns): {output_path}")
-    return output_path
-
+def generate_broll(prompt: str, cloud_url: str, output_path: str) -> str:
+    """Call external Cloud API (e.g. CogVideoX/Wan2.1) to generate B-Roll video."""
+    import requests
+    if not cloud_url: raise Exception("B-Roll Cloud URL not provided.")
+    print(f"[SaaSShorts] 🎥 Generating B-Roll via Cloud API: {cloud_url}")
+    try:
+        res = requests.post(cloud_url.rstrip('/') + '/api/generate', json={"prompt": prompt}, timeout=300)
+        res.raise_for_status()
+        with open(output_path, 'wb') as f: f.write(res.content)
+        return output_path
+    except Exception as e:
+        raise Exception(f"B-Roll Cloud API Error: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════
 # Phase 4: Compositing (FFmpeg)
@@ -1414,8 +1321,9 @@ def generate_full_video(
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    fal_key = config["fal_key"]
-    fishaudio_key = config["fishaudio_key"]
+    sdxl_cloud_url = config.get("sdxl_cloud_url")
+    lipsync_cloud_url = config.get("lipsync_cloud_url")
+    broll_cloud_url = config.get("broll_cloud_url")
     voice_id = config.get("voice_id", "21m00Tcm4TlvDq8ikWAM")
     actor_desc = config.get("actor_description") or script.get("actor_description", "a young professional in their late 20s, wearing a casual modern outfit, clean background")
 
@@ -1457,11 +1365,11 @@ def generate_full_video(
         log(f"[1/6] Generating {' + '.join(tasks)} (parallel)...")
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            future_img = executor.submit(generate_actor_image, actor_desc, fal_key, actor_img) if need_img else None
+            future_img = executor.submit(generate_actor_image, actor_desc, sdxl_cloud_url, actor_img) if need_img else None
             future_voice = executor.submit(
                 generate_voiceover, 
                 full_narration, 
-                fishaudio_key, 
+                "", 
                 audio_path, 
                 voice_id,
                 config.get("f5tts_url", ""),
@@ -1480,14 +1388,9 @@ def generate_full_video(
         log("[2/6] ✅ Using cached assets.")
 
     # ── Step 3: Generate talking head ──
-    video_mode = config.get("video_mode", "premium")
     if not _exists(talking_head):
-        if video_mode == "lowcost":
-            log("[3/6] Generating talking head (Low Cost: Hailuo + VEED Lipsync)... This takes 2-5 minutes.")
-            talking_head = generate_talking_head_lowcost(actor_img, audio_path, config, talking_head)
-        else:
-            log("[3/6] Generating talking head video (Kling Avatar v2)... This takes 2-5 minutes.")
-            talking_head = generate_talking_head(actor_img, audio_path, fal_key, talking_head)
+        log("[3/6] Generating talking head video via Cloud API... This takes a few minutes.")
+        talking_head = generate_talking_head(actor_img, audio_path, lipsync_cloud_url, talking_head)
         log("[3/6] Talking head ready.")
     else:
         log("[3/6] ✅ Talking head cached, skipping.")
@@ -1520,7 +1423,7 @@ def generate_full_video(
                 futures = {}
                 for i, seg, broll_path in broll_to_generate:
                     future = executor.submit(
-                        generate_broll, seg["broll_prompt"], fal_key, broll_path
+                        generate_broll, seg["broll_prompt"], broll_cloud_url, broll_path
                     )
                     futures[future] = {"seg": seg, "path": broll_path}
 
@@ -1554,23 +1457,12 @@ def generate_full_video(
 
     # Cost estimate
     audio_duration = _get_media_duration(audio_path)
-    if video_mode == "lowcost":
-        cost = {
-            "actor_image_flux": 0.05,
-            "voiceover_elevenlabs": round(len(full_narration) * 0.00003, 3),
-            "hailuo_img2video": 0.19,
-            "veed_lipsync": 0.20,
-            "broll_flux": round(len(broll_clips) * 0.05, 2),
-            "ffmpeg_compositing": 0.00,
-        }
-    else:
-        cost = {
-            "actor_image_flux": 0.05,
-            "voiceover_elevenlabs": round(len(full_narration) * 0.00003, 3),
-            "talking_head_kling": round(audio_duration * 0.056, 2),
-            "broll_kling": round(len(broll_clips) * 5 * 0.07, 2),
-            "ffmpeg_compositing": 0.00,
-        }
+    cost = {
+        "cloud_avatar": 0.0,
+        "cloud_lipsync": 0.0,
+        "cloud_broll": 0.0,
+        "ffmpeg_compositing": 0.00,
+    }
     cost["total"] = round(sum(cost.values()), 2)
 
     return {

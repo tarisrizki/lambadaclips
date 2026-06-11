@@ -52,7 +52,7 @@ STRICT EXCLUSIONS:
 - No generic intros/outros or purely sponsorship segments unless they contain the hook.
 - No clips < 30 s or > 60 s.
 
-OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). In the descriptions, ALWAYS include a CTA like "Follow me and comment X and I'll send you the workflow" (especially if discussing an n8n workflow):
+OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). In the descriptions, ALWAYS include a CTA like "Follow me and comment X and I'll send you the workflow":
 {{
   "shorts": [
     {{
@@ -68,13 +68,23 @@ OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by pre
 }}
 """
 
-# Load the YOLO model once (Keep for backup or scene analysis if needed)
-model = YOLO('yolov8n.pt')
+import threading
+import functools
 
-# --- MediaPipe Setup ---
-# Use standard Face Detection (BlazeFace) for speed
-mp_face_detection = mp.solutions.face_detection
-face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+# Thread-local storage for MediaPipe to ensure thread safety
+_thread_local = threading.local()
+
+def get_face_detector():
+    if not hasattr(_thread_local, "face_detection"):
+        _thread_local.face_detection = mp.solutions.face_detection.FaceDetection(
+            model_selection=1, min_detection_confidence=0.5
+        )
+    return _thread_local.face_detection
+
+@functools.lru_cache(maxsize=1)
+def get_yolo_model():
+    # Load YOLO once per process instead of on import
+    return YOLO('yolov8n.pt')
 
 class SmoothedCameraman:
     """
@@ -281,9 +291,9 @@ def detect_face_candidates(frame):
     """
     Returns list of all detected faces using lightweight FaceDetection.
     """
-    height, width, _ = frame.shape
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_detection.process(rgb_frame)
+    detector = get_face_detector()
+    results = detector.process(rgb_frame)
     
     candidates = []
     
@@ -309,9 +319,9 @@ def detect_person_yolo(frame):
     Fallback: Detect largest person using YOLO when face detection fails.
     Returns [x, y, w, h] of the person's 'upper body' approximation.
     """
-    # Use the globally loaded model
-    results = model(frame, verbose=False, classes=[0]) # class 0 is person
-    
+    # Use the lazy loaded model
+    yolo_model = get_yolo_model()
+    results = yolo_model(frame, verbose=False, classes=[0]) # class 0 is person
     if not results:
         return None
         
@@ -736,7 +746,6 @@ def process_video_to_vertical(input_video, final_output_video, draft_mode=True, 
     
     try:
         subprocess.run(audio_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        has_audio = True
     except subprocess.CalledProcessError:
         pass
 

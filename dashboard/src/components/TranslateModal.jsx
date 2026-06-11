@@ -63,14 +63,14 @@ export default function TranslateModal({ isOpen, onClose, onTranslate, isProcess
                     </div>
                     <div>
                         <h3 className="text-lg font-bold text-white">Dub Voice</h3>
-                        <p className="text-xs text-zinc-500">AI voice translation by Fish Audio</p>
+                        <p className="text-xs text-zinc-500">AI voice translation</p>
                     </div>
                 </div>
 
                 {!hasApiKey && (
                     <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/20 text-yellow-200 text-xs rounded-lg flex items-start gap-2">
                         <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                        <div>Configure Fish Audio API Key in Settings first.</div>
+                        
                     </div>
                 )}
 

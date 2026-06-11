@@ -85,7 +85,7 @@ export default function Legal() {
                             for debugging and abuse prevention.
                         </li>
                         <li>
-                            <strong className="text-white">API keys (Gemini, Fish Audio, Upload-Post):</strong> stored
+                            <strong className="text-white">API keys (Gemini, Upload-Post):</strong> stored
                             encrypted in your browser's <code className="text-zinc-200">localStorage</code>. They are
                             sent as request headers when a feature needs them, used to call the relevant third party,
                             and never written to our database or disk.
@@ -97,7 +97,7 @@ export default function Legal() {
                 <Section title="Third-party APIs">
                     <p>
                         When you use a feature that requires it, LambadaClips forwards relevant data to the third-party
-                        API for which you provided a key — Google Gemini (AI analysis), Fish Audio (optional dubbing),
+                        API for which you provided a key — Google Gemini (AI analysis),
                         Upload-Post (optional social posting). Those services have their own terms and privacy policies
                         which apply in addition to this notice.
                     </p>

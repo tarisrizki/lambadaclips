@@ -6,7 +6,7 @@ import HookModal from './HookModal';
 import TranslateModal from './TranslateModal';
 import { renderInBrowser } from '../lib/renderInBrowser';
 
-export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUserId, geminiApiKey, fishAudioKey, onPlay, onPause }) {
+export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUserId, geminiApiKey, onPlay, onPause }) {
     const [showModal, setShowModal] = useState(false);
     const [showSubtitleModal, setShowSubtitleModal] = useState(false);
     const videoRef = React.useRef(null);
@@ -271,7 +271,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
         setIsTranslating(true);
         setEditError(null);
         try {
-            const apiKey = fishAudioKey;
+            const apiKey = '';
             console.log('[Translate] API Key available:', !!apiKey);
 
             if (!apiKey) {
@@ -291,7 +291,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-FishAudio-Key': apiKey
+                    
                 },
                 body: JSON.stringify(requestBody)
             });
@@ -722,7 +722,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 onTranslate={handleTranslate}
                 isProcessing={isTranslating}
                 videoUrl={currentVideoUrl}
-                hasApiKey={!!fishAudioKey}
+                hasApiKey={true}
             />
 
         </div>

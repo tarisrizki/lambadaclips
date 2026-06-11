@@ -7,7 +7,16 @@ import shutil
 import glob
 import time
 import asyncio
+import logging
+import contextlib
+import functools
+import httpx
+import sys
+from urllib.parse import urlparse
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from typing import Dict, Optional, List
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header, BackgroundTasks
@@ -15,30 +24,176 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from app_core.config import (
+    CORS_ORIGINS,
+    DISABLE_YOUTUBE_URL,
+    JOB_RETENTION_SECONDS,
+    MAX_CONCURRENT_JOBS,
+    MAX_FILE_SIZE_MB,
+    OUTPUT_DIR as OUTPUT_PATH,
+    STATE_DB_PATH,
+    UPLOAD_DIR as UPLOAD_PATH,
+)
+from app_core.paths import (
+    job_directory,
+    job_media_path,
+    safe_filename,
+    safe_join,
+    safe_upload_suffix,
+    validate_prefixed_uuid,
+    validate_uuid,
+)
+from app_core.security import ApiSecurity, sign_media_url
+from app_core.social import upload_video
+from app_core.state import SQLiteState
+from editor import VideoEditor
+from hooks import add_hook_to_video
 from s3_uploader import upload_job_artifacts, list_all_clips, upload_actor_to_s3, list_actor_gallery, upload_video_to_gallery, list_video_gallery
+from saasshorts import (
+    DEFAULT_VOICES,
+    analyze_saas,
+    generate_full_video,
+    generate_scripts,
+    research_saas_online,
+    scrape_website,
+)
+from subtitles import generate_srt, burn_subtitles, generate_srt_from_video
+from thumbnail import analyze_video_for_titles, refine_titles, generate_thumbnail, generate_youtube_description
+# translation removed
 
-load_dotenv()
+logger = logging.getLogger("lambadaclips")
 
-# Constants
-UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "output"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+UPLOAD_DIR = os.fspath(UPLOAD_PATH)
+OUTPUT_DIR = os.fspath(OUTPUT_PATH)
 
-# Configuration
-# Default to 1 if not set, but user can set higher for powerful servers
-MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "5"))
-MAX_FILE_SIZE_MB = 2048  # 2GB limit
-JOB_RETENTION_SECONDS = 3600  # 1 hour retention
-DISABLE_YOUTUBE_URL = os.environ.get("DISABLE_YOUTUBE_URL", "false").lower() in ("1", "true", "yes")
-
-# Application State
+# Application state is persisted to SQLite. Secrets needed only while a process is
+# running live in the separate runtime dictionary and are never serialized.
+state_db = SQLiteState(STATE_DB_PATH)
 job_queue = asyncio.Queue()
-jobs: Dict[str, Dict] = {}
-thumbnail_sessions: Dict[str, Dict] = {}
-publish_jobs: Dict[str, Dict] = {}  # {publish_id: {status, result, error}}
-# Semester to limit concurrency to MAX_CONCURRENT_JOBS
+jobs = state_db.namespace("jobs")
+thumbnail_sessions = state_db.namespace("thumbnail_sessions")
+publish_jobs = state_db.namespace("publish_jobs")
+enhance_jobs = state_db.namespace("enhance_jobs")
+saas_jobs = state_db.namespace("saas_jobs")
+job_runtime: Dict[str, Dict] = {}
+
+# Semaphore to limit concurrency to MAX_CONCURRENT_JOBS
 concurrency_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+api_security = ApiSecurity()
+
+
+def _job_dir(job_id: str) -> str:
+    return job_directory(OUTPUT_DIR, job_id)
+
+
+def _job_media(job_id: str, filename: str) -> str:
+    return job_media_path(OUTPUT_DIR, job_id, filename)
+
+
+def _video_url(job_id: str, filename: str) -> str:
+    safe_job_id = validate_uuid(job_id, "job ID")
+    name = safe_filename(filename)
+    return sign_media_url(f"/videos/{safe_job_id}/{name}", JOB_RETENTION_SECONDS)
+
+
+def _named_video_url(directory: str, filename: str) -> str:
+    safe_directory = safe_filename(directory)
+    safe_join(OUTPUT_DIR, safe_directory, safe_filename(filename))
+    return sign_media_url(
+        f"/videos/{safe_directory}/{safe_filename(filename)}",
+        JOB_RETENTION_SECONDS,
+    )
+
+
+def validate_youtube_url(url: str) -> str:
+    parsed_url = urlparse(url)
+    allowed_hosts = {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "youtu.be",
+        "www.youtu.be",
+    }
+    if parsed_url.scheme not in {"http", "https"} or parsed_url.hostname not in allowed_hosts:
+        raise HTTPException(status_code=400, detail="Only YouTube URLs are supported")
+    return url
+
+
+def _thumbnail_url(relative_path: str) -> str:
+    parts = [part for part in relative_path.replace("\\", "/").split("/") if part]
+    if not parts:
+        raise HTTPException(status_code=400, detail="Invalid thumbnail path")
+    safe_parts = [safe_filename(part) for part in parts]
+    safe_join(THUMBNAILS_DIR if "THUMBNAILS_DIR" in globals() else OUTPUT_DIR, *safe_parts)
+    return sign_media_url(
+        f"/thumbnails/{'/'.join(safe_parts)}", JOB_RETENTION_SECONDS
+    )
+
+
+def update_clip_url(job_id: str, clip_index: int, filename: str) -> str:
+    video_url = _video_url(job_id, filename)
+    job = jobs.get(job_id)
+    if job:
+        clips = job.get("result", {}).get("clips", [])
+        if 0 <= clip_index < len(clips):
+            clips[clip_index]["video_url"] = video_url
+
+    metadata_files = glob.glob(os.path.join(_job_dir(job_id), "*_metadata.json"))
+    if metadata_files:
+        metadata_path = metadata_files[0]
+        with open(metadata_path, "r", encoding="utf-8") as metadata_file:
+            data = json.load(metadata_file)
+        disk_clips = data.get("shorts", [])
+        if 0 <= clip_index < len(disk_clips):
+            disk_clips[clip_index]["video_url"] = video_url
+            data["shorts"] = disk_clips
+            temp_path = f"{metadata_path}.{uuid.uuid4().hex}.tmp"
+            try:
+                with open(temp_path, "w", encoding="utf-8") as metadata_file:
+                    json.dump(data, metadata_file, indent=2, ensure_ascii=False)
+                os.replace(temp_path, metadata_path)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.remove(temp_path)
+    return video_url
+
+
+async def save_upload_limited(
+    upload: UploadFile,
+    destination: str,
+    *,
+    max_bytes: int,
+) -> int:
+    written = 0
+    try:
+        with open(destination, "wb") as output_file:
+            while chunk := await upload.read(1024 * 1024):
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(status_code=413, detail="Uploaded file is too large")
+                output_file.write(chunk)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.remove(destination)
+        raise
+    return written
+
+
+def _persist_state() -> None:
+    state_db.flush_all()
+
+
+def _mark_interrupted_jobs() -> None:
+    for store in (jobs, enhance_jobs, publish_jobs, saas_jobs):
+        for record in store.values():
+            if record.get("status") in {"queued", "processing", "uploading"}:
+                record["status"] = "failed"
+                record["error"] = "Server restarted before the job completed"
+                record.setdefault("logs", []).append(record["error"])
+    _persist_state()
+
+
+_mark_interrupted_jobs()
 
 def _relocate_root_job_artifacts(job_id: str, job_output_dir: str) -> bool:
     """
@@ -83,7 +238,6 @@ def _relocate_root_job_artifacts(job_id: str, job_output_dir: str) -> bool:
 
 async def cleanup_jobs():
     """Background task to remove old jobs and files."""
-    import time
     print("🧹 Cleanup task started.")
     while True:
         try:
@@ -101,19 +255,15 @@ async def cleanup_jobs():
                         if job_id in jobs:
                             del jobs[job_id]
 
-            # Cleanup SaaSShorts jobs from memory
-            try:
-                saas_expired = [
-                    jid for jid, jdata in list(saas_jobs.items())
-                    if jdata.get("status") in ("completed", "failed")
-                    and jdata.get("output_dir")
-                    and os.path.isdir(jdata["output_dir"])
-                    and now - os.path.getmtime(jdata["output_dir"]) > JOB_RETENTION_SECONDS
-                ]
-                for jid in saas_expired:
-                    del saas_jobs[jid]
-            except NameError:
-                pass
+            saas_expired = [
+                jid for jid, jdata in list(saas_jobs.items())
+                if jdata.get("status") in ("completed", "failed")
+                and jdata.get("output_dir")
+                and os.path.isdir(jdata["output_dir"])
+                and now - os.path.getmtime(jdata["output_dir"]) > JOB_RETENTION_SECONDS
+            ]
+            for jid in saas_expired:
+                del saas_jobs[jid]
 
             # Cleanup Uploads
             for filename in os.listdir(UPLOAD_DIR):
@@ -121,7 +271,8 @@ async def cleanup_jobs():
                 try:
                     if now - os.path.getmtime(file_path) > JOB_RETENTION_SECONDS:
                          os.remove(file_path)
-                except Exception: pass
+                except OSError as exc:
+                    logger.warning("Could not remove expired upload %s: %s", file_path, exc)
 
         except Exception as e:
             print(f"⚠️ Cleanup error: {e}")
@@ -145,6 +296,13 @@ async def process_queue():
             print(f"❌ Queue dispatch error: {e}")
             await asyncio.sleep(1)
 
+
+async def persist_state_periodically():
+    while True:
+        await asyncio.sleep(2)
+        await asyncio.to_thread(_persist_state)
+
+
 async def run_job_wrapper(job_id):
     """Wrapper to run job and release semaphore"""
     try:
@@ -161,22 +319,30 @@ async def run_job_wrapper(job_id):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start worker and cleanup
     worker_task = asyncio.create_task(process_queue())
     cleanup_task = asyncio.create_task(cleanup_jobs())
-    yield
-    # Cleanup (optional: cancel worker)
+    persistence_task = asyncio.create_task(persist_state_periodically())
+    try:
+        yield
+    finally:
+        for task in (worker_task, cleanup_task, persistence_task):
+            task.cancel()
+        for task in (worker_task, cleanup_task, persistence_task):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await asyncio.to_thread(_persist_state)
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.middleware("http")
+async def secure_api(request: Request, call_next):
+    return await api_security.middleware(request, call_next)
 
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*",
-        "https://clips.lambada.my.id",
-        "http://clips.lambada.my.id",
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -209,9 +375,15 @@ def enqueue_output(out, job_id):
 
 async def run_job(job_id, job_data):
     """Executes the subprocess for a specific job."""
-    
-    cmd = job_data['cmd']
-    env = job_data['env']
+
+    runtime = job_runtime.get(job_id)
+    if not runtime:
+        jobs[job_id]["status"] = "failed"
+        jobs[job_id]["logs"].append("Runtime data is unavailable.")
+        return
+
+    cmd = runtime["cmd"]
+    env = runtime["env"]
     output_dir = job_data['output_dir']
     
     jobs[job_id]['status'] = 'processing'
@@ -262,14 +434,13 @@ async def run_job(job_id, job_data):
                              if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
                                  # Checking if file is growing? For now assume if it exists and main.py moves it there, it's done.
                                  # main.py writes to temp_... then moves to final name. So presence means ready!
-                                 clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
+                                 clip['video_url'] = _video_url(job_id, clip_filename)
                                  ready_clips.append(clip)
                         
                         if ready_clips:
                              jobs[job_id]['result'] = {'clips': ready_clips, 'cost_analysis': cost_analysis}
-            except Exception as e:
-                # Ignore read errors during processing
-                pass
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.debug("Partial metadata is not ready for job %s: %s", job_id, exc)
 
         returncode = process.returncode
         
@@ -278,7 +449,7 @@ async def run_job(job_id, job_data):
             jobs[job_id]['logs'].append("Process finished successfully.")
             
             # Start S3 upload in background (silent, non-blocking)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             loop.run_in_executor(None, upload_job_artifacts, output_dir, job_id)
             
             # Find result JSON
@@ -299,7 +470,7 @@ async def run_job(job_id, job_data):
 
                 for i, clip in enumerate(clips):
                      clip_filename = f"{base_name}_clip_{i+1}.mp4"
-                     clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
+                     clip['video_url'] = _video_url(job_id, clip_filename)
                 
                 jobs[job_id]['result'] = {'clips': clips, 'cost_analysis': cost_analysis}
             else:
@@ -312,17 +483,26 @@ async def run_job(job_id, job_data):
     except Exception as e:
         jobs[job_id]['status'] = 'failed'
         jobs[job_id]['logs'].append(f"Execution error: {str(e)}")
+    finally:
+        job_runtime.pop(job_id, None)
+        _persist_state()
 
 @app.get("/api/config")
 async def get_config():
     return {"youtubeUrlEnabled": not DISABLE_YOUTUBE_URL}
+
+
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok"}
 
 @app.post("/api/process")
 async def process_endpoint(
     request: Request,
     file: Optional[UploadFile] = File(None),
     url: Optional[str] = Form(None),
-    acknowledged: Optional[str] = Form(None)
+    acknowledged: Optional[str] = Form(None),
+    prompt_template: Optional[str] = Form(None),
 ):
     api_key = request.headers.get("X-Gemini-Key")
     if not api_key:
@@ -331,8 +511,14 @@ async def process_endpoint(
     if not url and not file:
         raise HTTPException(status_code=400, detail="Must provide URL or File")
 
+    if str(acknowledged).lower() != "true":
+        raise HTTPException(status_code=400, detail="Content ownership acknowledgement is required")
+
     if url and DISABLE_YOUTUBE_URL:
         raise HTTPException(status_code=403, detail="YouTube URL ingest is disabled on this deployment. Please upload a file you own.")
+
+    if url:
+        validate_youtube_url(url)
 
     # Capture attestation context for legal record (IP + timestamp + UA)
     client_ip = request.client.host if request.client else "unknown"
@@ -349,32 +535,40 @@ async def process_endpoint(
     }
 
     job_id = str(uuid.uuid4())
-    job_output_dir = os.path.join(OUTPUT_DIR, job_id)
+    job_output_dir = _job_dir(job_id)
     os.makedirs(job_output_dir, exist_ok=True)
 
     # Prepare Command
-    cmd = ["python", "-u", "main.py"] # -u for unbuffered
+    cmd = [sys.executable, "-u", "main.py"]
     env = os.environ.copy()
-    env["GEMINI_API_KEY"] = api_key # Override with key from request
+    env["GEMINI_API_KEY"] = api_key
+    if prompt_template:
+        if len(prompt_template) > 20_000:
+            raise HTTPException(status_code=400, detail="Prompt template is too large")
+        env["GEMINI_PROMPT_TEMPLATE_OVERRIDE"] = prompt_template
 
     if url:
         cmd.extend(["-u", url])
     else:
-        # Save uploaded file with size limit check
-        input_path = os.path.join(UPLOAD_DIR, f"{job_id}_{file.filename}")
+        input_path = safe_join(UPLOAD_DIR, f"{job_id}{safe_upload_suffix(file.filename)}")
 
-        # Read file in chunks to check size
         size = 0
         limit_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
-
-        with open(input_path, "wb") as buffer:
-            while content := await file.read(1024 * 1024): # Read 1MB chunks
-                size += len(content)
-                if size > limit_bytes:
-                    os.remove(input_path)
-                    shutil.rmtree(job_output_dir)
-                    raise HTTPException(status_code=413, detail=f"File too large. Max size {MAX_FILE_SIZE_MB}MB")
-                buffer.write(content)
+        try:
+            with open(input_path, "wb") as buffer:
+                while content := await file.read(1024 * 1024):
+                    size += len(content)
+                    if size > limit_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"File too large. Max size {MAX_FILE_SIZE_MB}MB",
+                        )
+                    buffer.write(content)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.remove(input_path)
+            shutil.rmtree(job_output_dir, ignore_errors=True)
+            raise
 
         cmd.extend(["-i", input_path])
 
@@ -386,11 +580,10 @@ async def process_endpoint(
     jobs[job_id] = {
         'status': 'queued',
         'logs': [f"Job {job_id} queued."],
-        'cmd': cmd,
-        'env': env,
         'output_dir': job_output_dir,
         'attestation': attestation
     }
+    job_runtime[job_id] = {"cmd": cmd, "env": env}
 
     await job_queue.put(job_id)
 
@@ -398,6 +591,7 @@ async def process_endpoint(
 
 @app.get("/api/status/{job_id}")
 async def get_status(job_id: str):
+    job_id = validate_uuid(job_id, "job ID")
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     
@@ -407,12 +601,6 @@ async def get_status(job_id: str):
         "logs": job['logs'],
         "result": job.get('result')
     }
-
-from editor import VideoEditor
-from subtitles import generate_srt, burn_subtitles, generate_srt_from_video
-from hooks import add_hook_to_video
-from translate import translate_video, get_supported_languages
-from thumbnail import analyze_video_for_titles, refine_titles, generate_thumbnail, generate_youtube_description
 
 class EditRequest(BaseModel):
     job_id: str
@@ -442,21 +630,21 @@ async def edit_clip(
         # Resolve Input Path: Prefer explict input_filename from frontend (chaining edits)
         if req.input_filename:
             # Security: Ensure just a filename, no paths
-            safe_name = os.path.basename(req.input_filename).split('?')[0]
-            input_path = os.path.join(OUTPUT_DIR, req.job_id, safe_name)
+            safe_name = safe_filename(req.input_filename)
+            input_path = _job_media(req.job_id, safe_name)
             filename = safe_name
         else:
             # Fallback to original clip
             clip = job['result']['clips'][req.clip_index]
             filename = clip['video_url'].split('/')[-1].split('?')[0]
-            input_path = os.path.join(OUTPUT_DIR, req.job_id, filename)
+            input_path = _job_media(req.job_id, filename)
         
         if not os.path.exists(input_path):
              raise HTTPException(status_code=404, detail=f"Video file not found: {input_path}")
 
         # Define output path for edited video
         edited_filename = f"edited_{filename}"
-        output_path = os.path.join(OUTPUT_DIR, req.job_id, edited_filename)
+        output_path = _job_media(req.job_id, edited_filename)
         
         # Run editing in a thread to avoid blocking main loop
         # Since VideoEditor uses blocking calls (subprocess, API wait)
@@ -466,7 +654,7 @@ async def edit_clip(
             # SAFE FILE RENAMING STRATEGY (Avoid UnicodeEncodeError in Docker)
             # Create a safe ASCII filename in the same directory
             safe_filename = f"temp_input_{req.job_id}.mp4"
-            safe_input_path = os.path.join(OUTPUT_DIR, req.job_id, safe_filename)
+            safe_input_path = _job_media(req.job_id, safe_filename)
             
             # Copy original file to safe path
             # (Copy is safer than rename if something crashes, we keep original)
@@ -489,7 +677,7 @@ async def edit_clip(
                 # Load transcript from metadata
                 transcript = None
                 try:
-                    meta_files = glob.glob(os.path.join(OUTPUT_DIR, req.job_id, "*_metadata.json"))
+                    meta_files = glob.glob(os.path.join(_job_dir(req.job_id), "*_metadata.json"))
                     if meta_files:
                         with open(meta_files[0], 'r') as f:
                             data = json.load(f)
@@ -502,7 +690,7 @@ async def edit_clip(
                 
                 # 4. Apply
                 # Use safe output name first
-                safe_output_path = os.path.join(OUTPUT_DIR, req.job_id, f"temp_output_{req.job_id}.mp4")
+                safe_output_path = _job_media(req.job_id, f"temp_output_{req.job_id}.mp4")
                 editor.apply_edits(safe_input_path, safe_output_path, filter_data)
                 
                 # Move result to final destination (rename works even if dest name has unicode if filesystem supports it, 
@@ -520,14 +708,14 @@ async def edit_clip(
                     os.remove(safe_input_path)
 
         # Run in thread pool
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         plan = await loop.run_in_executor(None, run_edit)
         
         # Update clip URL in the job result? 
         # Or return new URL and let frontend handle it?
         # Updating job result allows persistence if page refreshes.
         
-        new_video_url = f"/videos/{req.job_id}/{edited_filename}"
+        new_video_url = update_clip_url(req.job_id, req.clip_index, edited_filename)
         
         # Start a new "edited" clip entry or just update the current one?
         # Let's update the current one's video_url but keep backup?
@@ -563,9 +751,6 @@ class EnhanceRequest(BaseModel):
 class EnhanceResponse(BaseModel):
     enhance_id: str
     status: str
-
-# Stores enhance jobs in memory (enhance_id -> status, error, clip_url)
-enhance_jobs = {}
 
 @app.post("/api/enhance", response_model=EnhanceResponse)
 async def enhance_clip(req: EnhanceRequest):
@@ -634,7 +819,7 @@ async def enhance_clip(req: EnhanceRequest):
                 # To bypass browser cache on the frontend, we could append a query param, 
                 # but the URL itself doesn't change here. The frontend will handle cache busting.
                 enhance_jobs[enhance_id]['status'] = 'completed'
-                enhance_jobs[enhance_id]['clip_url'] = f"/videos/{req.job_id}/{clip_filename}"
+                enhance_jobs[enhance_id]['clip_url'] = _video_url(req.job_id, clip_filename)
             else:
                 enhance_jobs[enhance_id]['status'] = 'failed'
                 enhance_jobs[enhance_id]['error'] = stderr.decode('utf-8', errors='replace')
@@ -644,7 +829,7 @@ async def enhance_clip(req: EnhanceRequest):
             enhance_jobs[enhance_id]['error'] = str(e)
             print(f"❌ Enhance exception: {e}")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     loop.run_in_executor(None, run_enhance)
     
     return EnhanceResponse(enhance_id=enhance_id, status="processing")
@@ -662,7 +847,7 @@ async def get_clip_transcript(job_id: str, clip_index: int):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    output_dir = os.path.join(OUTPUT_DIR, job_id)
+    output_dir = _job_dir(job_id)
     json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
 
     if not json_files:
@@ -709,7 +894,6 @@ RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL", "http://renderer:3100")
 @app.post("/api/render")
 async def proxy_render(request: Request):
     """Proxy render requests to the Node.js Remotion render service."""
-    import httpx
     body = await request.json()
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -721,7 +905,6 @@ async def proxy_render(request: Request):
 @app.get("/api/render/{render_id}")
 async def proxy_render_status(render_id: str):
     """Proxy render status polling to the Node.js Remotion render service."""
-    import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{RENDER_SERVICE_URL}/render/{render_id}")
@@ -756,12 +939,12 @@ async def generate_effects_config(
     try:
         # Resolve input path
         if req.input_filename:
-            safe_name = os.path.basename(req.input_filename)
-            input_path = os.path.join(OUTPUT_DIR, req.job_id, safe_name)
+            safe_name = safe_filename(req.input_filename)
+            input_path = _job_media(req.job_id, safe_name)
         else:
             clip = job['result']['clips'][req.clip_index]
             filename = clip['video_url'].split('/')[-1]
-            input_path = os.path.join(OUTPUT_DIR, req.job_id, filename)
+            input_path = _job_media(req.job_id, filename)
 
         if not os.path.exists(input_path):
             raise HTTPException(status_code=404, detail=f"Video file not found: {input_path}")
@@ -771,7 +954,7 @@ async def generate_effects_config(
 
             # Create safe ASCII filename to avoid encoding issues
             safe_filename = f"temp_effects_{req.job_id}.mp4"
-            safe_input_path = os.path.join(OUTPUT_DIR, req.job_id, safe_filename)
+            safe_input_path = _job_media(req.job_id, safe_filename)
             shutil.copy(input_path, safe_input_path)
 
             try:
@@ -807,7 +990,7 @@ async def generate_effects_config(
                 # Load transcript from metadata
                 transcript = None
                 try:
-                    meta_files = glob.glob(os.path.join(OUTPUT_DIR, req.job_id, "*_metadata.json"))
+                    meta_files = glob.glob(os.path.join(_job_dir(req.job_id), "*_metadata.json"))
                     if meta_files:
                         with open(meta_files[0], 'r') as f:
                             data = json.load(f)
@@ -825,7 +1008,7 @@ async def generate_effects_config(
                 if os.path.exists(safe_input_path):
                     os.remove(safe_input_path)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         effects_config = await loop.run_in_executor(None, run_effects_generation)
 
         if effects_config is None:
@@ -849,7 +1032,7 @@ async def add_subtitles(req: SubtitleRequest):
     job = jobs[req.job_id]
     
     # We need to access metadata.json to get the transcript
-    output_dir = os.path.join(OUTPUT_DIR, req.job_id)
+    output_dir = _job_dir(req.job_id)
     json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
     
     if not json_files:
@@ -870,7 +1053,7 @@ async def add_subtitles(req: SubtitleRequest):
     
     # Video Path
     if req.input_filename:
-        filename = os.path.basename(req.input_filename).split('?')[0]
+        filename = safe_filename(req.input_filename)
     else:
         filename = clip_data.get('video_url', '').split('/')[-1].split('?')[0]
         if not filename:
@@ -902,7 +1085,7 @@ async def add_subtitles(req: SubtitleRequest):
             def run_transcribe_srt():
                 return generate_srt_from_video(input_path, srt_path)
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             success = await loop.run_in_executor(None, run_transcribe_srt)
         else:
             success = generate_srt(transcript, clip_data['start'], clip_data['end'], srt_path)
@@ -919,37 +1102,20 @@ async def add_subtitles(req: SubtitleRequest):
                            border_color=req.border_color, border_width=req.border_width,
                            bg_color=req.bg_color, bg_opacity=req.bg_opacity)
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, run_burn)
         
     except Exception as e:
         print(f"❌ Subtitle Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
         
-    # 3. Update Result and Metadata
-    # Update InMemory Jobs
-    if req.clip_index < len(job['result']['clips']):
-         job['result']['clips'][req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
-    
-    # Update Metadata on Disk (Persistence)
     try:
-        if req.clip_index < len(clips):
-            clips[req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
-            # Update the main data structure
-            data['shorts'] = clips
-            
-            # Write back
-            with open(json_files[0], 'w') as f:
-                json.dump(data, f, indent=4)
-                print(f"✅ Metadata updated with subtitled video for clip {req.clip_index}")
-    except Exception as e:
-        print(f"⚠️ Failed to update metadata.json: {e}")
-        # Non-critical, but good for persistence
+        new_video_url = update_clip_url(req.job_id, req.clip_index, output_filename)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Could not persist subtitle metadata: %s", exc)
+        new_video_url = _video_url(req.job_id, output_filename)
 
-    return {
-        "success": True,
-        "new_video_url": f"/videos/{req.job_id}/{output_filename}"
-    }
+    return {"success": True, "new_video_url": new_video_url}
 
 class HookRequest(BaseModel):
     job_id: str
@@ -965,7 +1131,7 @@ async def add_hook(req: HookRequest):
         raise HTTPException(status_code=404, detail="Job not found")
     
     job = jobs[req.job_id]
-    output_dir = os.path.join(OUTPUT_DIR, req.job_id)
+    output_dir = _job_dir(req.job_id)
     json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
     
     if not json_files:
@@ -982,7 +1148,7 @@ async def add_hook(req: HookRequest):
     
     # Video Path
     if req.input_filename:
-        filename = os.path.basename(req.input_filename).split('?')[0]
+        filename = safe_filename(req.input_filename)
     else:
         filename = clip_data.get('video_url', '').split('/')[-1].split('?')[0]
         if not filename:
@@ -1006,33 +1172,20 @@ async def add_hook(req: HookRequest):
         def run_hook():
              add_hook_to_video(input_path, req.text, output_path, position=req.position, font_scale=font_scale)
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, run_hook)
         
     except Exception as e:
         print(f"❌ Hook Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
         
-    # Update Persistence (Same logic as subtitles)
-    # Update InMemory Jobs
-    if req.clip_index < len(job['result']['clips']):
-         job['result']['clips'][req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
-    
-    # Update Metadata on Disk
     try:
-        if req.clip_index < len(clips):
-            clips[req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
-            data['shorts'] = clips
-            with open(json_files[0], 'w') as f:
-                json.dump(data, f, indent=4)
-                print(f"✅ Metadata updated with hook video for clip {req.clip_index}")
-    except Exception as e:
-        print(f"⚠️ Failed to update metadata.json: {e}")
+        new_video_url = update_clip_url(req.job_id, req.clip_index, output_filename)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Could not persist hook metadata: %s", exc)
+        new_video_url = _video_url(req.job_id, output_filename)
 
-    return {
-        "success": True,
-        "new_video_url": f"/videos/{req.job_id}/{output_filename}"
-    }
+    return {"success": True, "new_video_url": new_video_url}
 
 class TranslateRequest(BaseModel):
     job_id: str
@@ -1059,7 +1212,7 @@ async def translate_clip(
         raise HTTPException(status_code=404, detail="Job not found")
 
     job = jobs[req.job_id]
-    output_dir = os.path.join(OUTPUT_DIR, req.job_id)
+    output_dir = _job_dir(req.job_id)
     json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
 
     if not json_files:
@@ -1076,59 +1229,11 @@ async def translate_clip(
 
     # Video Path
     if req.input_filename:
-        filename = os.path.basename(req.input_filename).split('?')[0]
+        filename = safe_filename(req.input_filename)
     else:
         filename = clip_data.get('video_url', '').split('/')[-1].split('?')[0]
         if not filename:
-             base_name = os.path.basename(json_files[0]).replace('_metadata.json', '')
-             filename = f"{base_name}_clip_{req.clip_index+1}.mp4"
-
-    input_path = os.path.join(output_dir, filename)
-    if not os.path.exists(input_path):
-        raise HTTPException(status_code=404, detail=f"Video file not found: {input_path}")
-
-    # Output video with language suffix
-    base, ext = os.path.splitext(filename)
-    output_filename = f"translated_{req.target_language}_{base}{ext}"
-    output_path = os.path.join(output_dir, output_filename)
-
-    try:
-        # Run translation in thread pool (blocking API calls)
-        def run_translate():
-            return translate_video(
-                video_path=input_path,
-                output_path=output_path,
-                target_language=req.target_language,
-                api_key=x_fishaudio_key,
-                source_language=req.source_language,
-            )
-
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, run_translate)
-
-    except Exception as e:
-        print(f"❌ Translation Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-    # Update InMemory Jobs
-    if req.clip_index < len(job['result']['clips']):
-         job['result']['clips'][req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
-
-    # Update Metadata on Disk
-    try:
-        if req.clip_index < len(clips):
-            clips[req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
-            data['shorts'] = clips
-            with open(json_files[0], 'w') as f:
-                json.dump(data, f, indent=4)
-                print(f"✅ Metadata updated with translated video for clip {req.clip_index}")
-    except Exception as e:
-        print(f"⚠️ Failed to update metadata.json: {e}")
-
-    return {
-        "success": True,
-        "new_video_url": f"/videos/{req.job_id}/{output_filename}"
-    }
+            raise HTTPException(status_code=400, detail='Missing video filename')
 
 class SocialPostRequest(BaseModel):
     job_id: str
@@ -1142,93 +1247,43 @@ class SocialPostRequest(BaseModel):
     scheduled_date: Optional[str] = None # ISO-8601 string
     timezone: Optional[str] = "UTC"
 
-import httpx
-
 @app.post("/api/social/post")
 async def post_to_socials(req: SocialPostRequest):
     if req.job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     job = jobs[req.job_id]
     if 'result' not in job or 'clips' not in job['result']:
         raise HTTPException(status_code=400, detail="Job result not available")
-        
+
     try:
         clip = job['result']['clips'][req.clip_index]
-        # Video URL is relative /videos/..., we need absolute file path
-        # clip['video_url'] is like "/videos/{job_id}/{filename}"
-        # We constructed it as: f"/videos/{job_id}/{clip_filename}"
-        # And file is at f"{OUTPUT_DIR}/{job_id}/{clip_filename}"
-        
-        filename = clip['video_url'].split('/')[-1]
-        file_path = os.path.join(OUTPUT_DIR, req.job_id, filename)
-        
-        if not os.path.exists(file_path):
-             raise HTTPException(status_code=404, detail=f"Video file not found: {file_path}")
-
-        # Construct parameters for Upload-Post API
-        # Fallbacks
-        final_title = req.title or clip.get('title', 'Viral Short')
+        filename = safe_filename(clip['video_url'].split('/')[-1])
+        file_path = _job_media(req.job_id, filename)
+        final_title = (
+            req.title
+            or clip.get('video_title_for_youtube_short')
+            or clip.get('title', 'Viral Short')
+        )
         final_description = req.description or clip.get('video_description_for_instagram') or clip.get('video_description_for_tiktok') or "Check this out!"
-        
-        # Prepare form data
-        url = "https://api.upload-post.com/api/upload"
-        headers = {
-            "Authorization": f"Apikey {req.api_key}"
-        }
-        
-        # Prepare data as dict (httpx handles lists for multiple values)
-        data_payload = {
-            "user": req.user_id,
-            "title": final_title,
-            "platform[]": req.platforms, # Pass list directly
-            "async_upload": "true"  # Enable async upload
-        }
-
-        # Add scheduling if present
-        if req.scheduled_date:
-            data_payload["scheduled_date"] = req.scheduled_date
-            if req.timezone:
-                data_payload["timezone"] = req.timezone
-        
-        # Add Platform specifics
-        if "tiktok" in req.platforms:
-             data_payload["tiktok_title"] = final_description
-             
-        if "instagram" in req.platforms:
-             data_payload["instagram_title"] = final_description
-             data_payload["media_type"] = "REELS"
-
-        if "youtube" in req.platforms:
-             yt_title = req.title or clip.get('video_title_for_youtube_short', final_title)
-             data_payload["youtube_title"] = yt_title
-             data_payload["youtube_description"] = final_description
-             data_payload["privacyStatus"] = "public"
-
-        # Send File
-        # httpx AsyncClient requires async file reading or bytes. 
-        # Since we have MAX_FILE_SIZE_MB, reading into memory is safe-ish.
-        with open(file_path, "rb") as f:
-            file_content = f.read()
-            
-        files = {
-            "video": (filename, file_content, "video/mp4")
-        }
-
-        # Switch to synchronous Client to avoid "sync request with AsyncClient" error with multipart/files
-        with httpx.Client(timeout=120.0) as client:
-            print(f"📡 Sending to Upload-Post for platforms: {req.platforms}")
-            response = client.post(url, headers=headers, data=data_payload, files=files)
-            
-        if response.status_code not in [200, 201, 202]: # Added 201
-             print(f"❌ Upload-Post Error: {response.text}")
-             raise HTTPException(status_code=response.status_code, detail=f"Vendor API Error: {response.text}")
-
-        return response.json()
-
-    except Exception as e:
-        print(f"❌ Social Post Exception: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return await asyncio.to_thread(
+            upload_video,
+            file_path=file_path,
+            api_key=req.api_key,
+            user_id=req.user_id,
+            platforms=req.platforms,
+            title=final_title,
+            description=final_description,
+            scheduled_date=req.scheduled_date,
+            timezone=req.timezone,
+        )
+    except IndexError as exc:
+        raise HTTPException(status_code=400, detail="Invalid clip index") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Social post failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 @app.get("/api/social/user")
 async def get_social_user(api_key: str = Header(..., alias="X-Upload-Post-Key")):
@@ -1294,6 +1349,10 @@ async def thumbnail_upload(
     """Upload video and start background Whisper transcription immediately."""
     if not url and not file:
         raise HTTPException(status_code=400, detail="Must provide URL or File")
+    if url:
+        if DISABLE_YOUTUBE_URL:
+            raise HTTPException(status_code=403, detail="YouTube URL ingest is disabled")
+        validate_youtube_url(url)
 
     session_id = str(uuid.uuid4())
     transcript_event = asyncio.Event()
@@ -1301,10 +1360,14 @@ async def thumbnail_upload(
     # Save file if uploaded directly
     video_path = None
     if file:
-        video_path = os.path.join(UPLOAD_DIR, f"thumb_{session_id}_{file.filename}")
-        with open(video_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        video_path = safe_join(
+            UPLOAD_DIR, f"thumb_{session_id}{safe_upload_suffix(file.filename)}"
+        )
+        await save_upload_limited(
+            file,
+            video_path,
+            max_bytes=MAX_FILE_SIZE_MB * 1024 * 1024,
+        )
 
     # Initialize session
     thumbnail_sessions[session_id] = {
@@ -1327,12 +1390,12 @@ async def thumbnail_upload(
             # Download YouTube video if URL was provided
             if not vpath and url:
                 from main import download_youtube_video
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 vpath, _ = await loop.run_in_executor(None, download_youtube_video, url, UPLOAD_DIR)
                 thumbnail_sessions[session_id]["video_path"] = vpath
 
             from main import transcribe_video
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             transcript = await loop.run_in_executor(None, transcribe_video, vpath)
             segments = transcript.get("segments", [])
             duration = segments[-1]["end"] if segments else 0
@@ -1398,17 +1461,24 @@ async def thumbnail_analyze(
         session_id = str(uuid.uuid4())
 
         if url:
+            if DISABLE_YOUTUBE_URL:
+                raise HTTPException(status_code=403, detail="YouTube URL ingest is disabled")
+            validate_youtube_url(url)
             from main import download_youtube_video
-            video_path, _ = download_youtube_video(url, UPLOAD_DIR)
+            video_path, _ = await asyncio.to_thread(download_youtube_video, url, UPLOAD_DIR)
         else:
-            video_path = os.path.join(UPLOAD_DIR, f"thumb_{session_id}_{file.filename}")
-            with open(video_path, "wb") as buffer:
-                content = await file.read()
-                buffer.write(content)
+            video_path = safe_join(
+                UPLOAD_DIR, f"thumb_{session_id}{safe_upload_suffix(file.filename)}"
+            )
+            await save_upload_limited(
+                file,
+                video_path,
+                max_bytes=MAX_FILE_SIZE_MB * 1024 * 1024,
+            )
 
     try:
         # Run analysis in thread pool (skips Whisper if pre_transcript is available)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, analyze_video_for_titles, api_key, video_path, pre_transcript)
 
         # Store/update session context
@@ -1478,7 +1548,7 @@ async def thumbnail_titles(
     session["conversation"].append({"role": "user", "content": req.message})
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             refine_titles,
@@ -1521,19 +1591,24 @@ async def thumbnail_generate(
     # Save optional uploaded images
     face_path = None
     bg_path = None
-    thumb_upload_dir = os.path.join(UPLOAD_DIR, f"thumb_{session_id}")
+    session_id = validate_uuid(session_id, "session ID")
+    thumb_upload_dir = safe_join(UPLOAD_DIR, f"thumb_{session_id}")
     os.makedirs(thumb_upload_dir, exist_ok=True)
 
     try:
         if face and face.filename:
-            face_path = os.path.join(thumb_upload_dir, f"face_{face.filename}")
-            with open(face_path, "wb") as f:
-                f.write(await face.read())
+            face_path = safe_join(
+                thumb_upload_dir, f"face{safe_upload_suffix(face.filename)}"
+            )
+            await save_upload_limited(face, face_path, max_bytes=20 * 1024 * 1024)
 
         if background and background.filename:
-            bg_path = os.path.join(thumb_upload_dir, f"bg_{background.filename}")
-            with open(bg_path, "wb") as f:
-                f.write(await background.read())
+            bg_path = safe_join(
+                thumb_upload_dir, f"background{safe_upload_suffix(background.filename)}"
+            )
+            await save_upload_limited(
+                background, bg_path, max_bytes=20 * 1024 * 1024
+            )
 
         # Get video context from session (transcript summary from analysis step)
         video_context = ""
@@ -1541,7 +1616,7 @@ async def thumbnail_generate(
             video_context = thumbnail_sessions[session_id].get("context", "")
 
         # Run generation in thread pool
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         thumbnails = await loop.run_in_executor(
             None,
             generate_thumbnail,
@@ -1558,7 +1633,11 @@ async def thumbnail_generate(
         if not thumbnails:
             raise HTTPException(status_code=500, detail="Thumbnail generation failed. Please check your Gemini API key has access to image generation (gemini-3.1-flash-image-preview model).")
 
-        return {"thumbnails": thumbnails}
+        signed_thumbnails = [
+            _thumbnail_url(urlparse(url).path.removeprefix("/thumbnails/"))
+            for url in thumbnails
+        ]
+        return {"thumbnails": signed_thumbnails}
 
     except HTTPException:
         raise
@@ -1590,7 +1669,7 @@ async def thumbnail_describe(
         raise HTTPException(status_code=400, detail="No transcript segments available. Please analyze a video first.")
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             generate_youtube_description,
@@ -1627,11 +1706,11 @@ async def thumbnail_publish(
         raise HTTPException(status_code=404, detail="Original video file not found")
 
     # Resolve thumbnail path from URL
-    thumb_relative = thumbnail_url.lstrip("/")
+    thumb_relative = urlparse(thumbnail_url).path.lstrip("/")
     if thumb_relative.startswith("thumbnails/"):
-        thumb_path = os.path.join(OUTPUT_DIR, thumb_relative)
+        thumb_path = safe_join(OUTPUT_DIR, *thumb_relative.split("/"))
     else:
-        thumb_path = os.path.join(THUMBNAILS_DIR, thumb_relative)
+        thumb_path = safe_join(THUMBNAILS_DIR, *thumb_relative.split("/"))
 
     if not os.path.exists(thumb_path):
         raise HTTPException(status_code=404, detail=f"Thumbnail file not found: {thumb_path}")
@@ -1732,21 +1811,6 @@ async def thumbnail_publish_status(publish_id: str):
 # SaaSShorts: AI UGC Video Generator for SaaS Products
 # ═══════════════════════════════════════════════════════════════════════
 
-from saasshorts import (
-    scrape_website,
-    research_saas_online,
-    analyze_saas,
-    generate_scripts,
-    generate_full_video,
-    generate_actor_images,
-    get_fishaudio_voices,
-    DEFAULT_VOICES,
-)
-
-# State for SaaSShorts jobs (separate from video processing jobs)
-saas_jobs: Dict[str, Dict] = {}
-
-
 class SaaSAnalyzeRequest(BaseModel):
     url: Optional[str] = None
     description: Optional[str] = None  # Manual product/business description
@@ -1770,7 +1834,7 @@ async def saasshorts_analyze(
         raise HTTPException(status_code=400, detail="Provide a URL or a product description")
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def run_analysis():
             web_research = None
@@ -1819,22 +1883,18 @@ async def saasshorts_actor_upload(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="File must be an image")
 
     try:
-        content = await file.read()
-
-        # Validate minimum size
-        if len(content) < 1000:
-            raise HTTPException(status_code=400, detail="File too small to be a valid image")
-
         upload_id = uuid.uuid4().hex[:8]
         upload_dir = os.path.join(OUTPUT_DIR, "actor_uploads")
         os.makedirs(upload_dir, exist_ok=True)
         filename = f"custom_{upload_id}.png"
-        file_path = os.path.join(upload_dir, filename)
+        file_path = safe_join(upload_dir, filename)
+        size = await save_upload_limited(file, file_path, max_bytes=20 * 1024 * 1024)
+        if size < 1000:
+            with contextlib.suppress(OSError):
+                os.remove(file_path)
+            raise HTTPException(status_code=400, detail="File too small to be a valid image")
 
-        with open(file_path, "wb") as f:
-            f.write(content)
-
-        return {"url": f"/videos/actor_uploads/{filename}"}
+        return {"url": _named_video_url("actor_uploads", filename)}
 
     except HTTPException:
         raise
@@ -1845,13 +1905,8 @@ async def saasshorts_actor_upload(file: UploadFile = File(...)):
 @app.post("/api/saasshorts/actor-options")
 async def saasshorts_actor_options(
     req: SaaSActorRequest,
-    x_fal_key: Optional[str] = Header(None, alias="X-Fal-Key"),
 ):
     """Generate multiple actor image options for the user to choose from."""
-    fal_key = x_fal_key
-    if not fal_key:
-        raise HTTPException(status_code=400, detail="Missing fal.ai API Key")
-
     try:
         job_id = str(uuid.uuid4())
         out_dir = os.path.join(OUTPUT_DIR, f"saas_actors_{job_id}")
@@ -1863,7 +1918,7 @@ async def saasshorts_actor_options(
             None,
             functools.partial(
                 generate_actor_images,
-                req.actor_description, fal_key, out_dir, "actor", req.num_options,
+                req.actor_description, out_dir, "actor", req.num_options,
                 product_description=req.product_description,
             ),
         )
@@ -1879,7 +1934,9 @@ async def saasshorts_actor_options(
                 urls.append(s3_url)
             else:
                 # Fallback to local URL if S3 fails
-                urls.append(f"/videos/saas_actors_{job_id}/{os.path.basename(p)}")
+                urls.append(
+                    _named_video_url(f"saas_actors_{job_id}", os.path.basename(p))
+                )
 
         return {"images": urls}
 
@@ -1921,65 +1978,32 @@ async def saasshorts_post_to_socials(req: SaaSPostRequest):
         raise HTTPException(status_code=400, detail="No video available for this job")
 
     try:
-        # Resolve video file path
-        video_url = result["video_url"]  # e.g. /videos/saas_xxx/slug_final.mp4
-        rel_path = video_url.replace("/videos/", "")
-        file_path = os.path.join(OUTPUT_DIR, rel_path)
-
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail=f"Video file not found")
-
+        validated_job_id = validate_uuid(req.job_id, "job ID")
+        filename = safe_filename(result["video_url"].split("/")[-1])
+        file_path = safe_join(OUTPUT_DIR, f"saas_{validated_job_id}", filename)
         script = result.get("script", {})
         final_title = req.title or script.get("title", "AI Short")
         final_description = req.description or script.get("caption", "")
         if not final_description:
             final_description = script.get("full_narration", "Check this out!")
 
-        url = "https://api.upload-post.com/api/upload"
-        headers = {"Authorization": f"Apikey {req.api_key}"}
-
-        data_payload = {
-            "user": req.user_id,
-            "title": final_title,
-            "platform[]": req.platforms,
-            "async_upload": "true",
-        }
-
-        if req.scheduled_date:
-            data_payload["scheduled_date"] = req.scheduled_date
-            if req.timezone:
-                data_payload["timezone"] = req.timezone
-
-        if "tiktok" in req.platforms:
-            data_payload["tiktok_title"] = final_description
-        if "instagram" in req.platforms:
-            data_payload["instagram_title"] = final_description
-            data_payload["media_type"] = "REELS"
-        if "youtube" in req.platforms:
-            data_payload["youtube_title"] = final_title
-            data_payload["youtube_description"] = final_description
-            data_payload["privacyStatus"] = "public"
-
-        filename = os.path.basename(file_path)
-        with open(file_path, "rb") as f:
-            file_content = f.read()
-
-        files = {"video": (filename, file_content, "video/mp4")}
-
-        with httpx.Client(timeout=120.0) as client:
-            print(f"📡 [AI Shorts] Sending to Upload-Post: {req.platforms}")
-            response = client.post(url, headers=headers, data=data_payload, files=files)
-
-        if response.status_code not in [200, 201, 202]:
-            raise HTTPException(status_code=response.status_code, detail=f"Upload-Post Error: {response.text}")
-
-        return response.json()
+        return await asyncio.to_thread(
+            upload_video,
+            file_path=file_path,
+            api_key=req.api_key,
+            user_id=req.user_id,
+            platforms=req.platforms,
+            title=final_title,
+            description=final_description,
+            scheduled_date=req.scheduled_date,
+            timezone=req.timezone,
+        )
 
     except HTTPException:
         raise
-    except Exception as e:
-        print(f"❌ [AI Shorts] Post Exception: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.exception("AI Shorts social post failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/gallery", response_class=HTMLResponse)
@@ -2157,24 +2181,23 @@ class SaaSGenerateRequest(BaseModel):
     f5tts_ref_text: Optional[str] = None
     f5tts_ref_audio: Optional[str] = None
     colab_url: Optional[str] = None
+    sdxl_cloud_url: Optional[str] = None
+    broll_cloud_url: Optional[str] = None
+    lipsync_cloud_url: Optional[str] = None
 
 
 @app.post("/api/saasshorts/generate")
 async def saasshorts_generate(
     req: SaaSGenerateRequest,
-    x_fal_key: Optional[str] = Header(None, alias="X-Fal-Key"),
-    x_fishaudio_key: Optional[str] = Header(None, alias="X-FishAudio-Key"),
     x_hf_token: Optional[str] = Header(None, alias="X-HF-Token"),
 ):
     """Generate a SaaS UGC video from a script. Returns a job_id for polling."""
-    fal_key = x_fal_key
-    fishaudio_key = x_fishaudio_key
     hf_token = x_hf_token
 
-    if not fal_key and not hf_token and not req.colab_url:
-        raise HTTPException(status_code=400, detail="Missing Video API Key (Fal/HF/Colab)")
-    if not fishaudio_key and not req.f5tts_url:
-        raise HTTPException(status_code=400, detail="Missing Fish Audio API Key or F5-TTS URL")
+    if not hf_token and not req.colab_url:
+        raise HTTPException(status_code=400, detail="Missing Video API Key (HF/Colab)")
+    if not req.f5tts_url:
+        raise HTTPException(status_code=400, detail="Missing F5-TTS URL")
 
     # Support retry: reuse output_dir so cached assets (image, voice, head, broll) are kept
     reused = False
@@ -2216,7 +2239,6 @@ async def saasshorts_generate(
     if req.selected_actor_url:
         if req.selected_actor_url.startswith("http"):
             # Download from S3 public URL to job output dir
-            import httpx
             try:
                 actor_local = os.path.join(job_output_dir, "selected_actor.png")
                 with httpx.Client(timeout=30.0) as client:
@@ -2228,13 +2250,13 @@ async def saasshorts_generate(
             except Exception:
                 pass
         else:
-            src = os.path.join(OUTPUT_DIR, req.selected_actor_url.replace("/videos/", ""))
+            local_url_path = urlparse(req.selected_actor_url).path
+            relative_path = local_url_path.removeprefix("/videos/")
+            src = safe_join(OUTPUT_DIR, *relative_path.split("/"))
             if os.path.exists(src):
                 selected_actor_path = src
 
     config = {
-        "fal_key": fal_key,
-        "fishaudio_key": fishaudio_key,
         "hf_token": hf_token,
         "colab_url": req.colab_url,
         "voice_id": req.voice_id or "21m00Tcm4TlvDq8ikWAM",
@@ -2244,6 +2266,9 @@ async def saasshorts_generate(
         "f5tts_url": req.f5tts_url,
         "f5tts_ref_text": req.f5tts_ref_text,
         "f5tts_ref_audio": req.f5tts_ref_audio,
+        "sdxl_cloud_url": req.sdxl_cloud_url,
+        "broll_cloud_url": req.broll_cloud_url,
+        "lipsync_cloud_url": req.lipsync_cloud_url,
     }
 
     async def run_generation():
@@ -2264,93 +2289,28 @@ async def saasshorts_generate(
             if job_id in saas_jobs:
                 video_filename = result["video_filename"]
                 saas_jobs[job_id]["status"] = "completed"
-                saas_jobs[job_id]["result"] = {
-                    "video_url": f"/videos/saas_{job_id}/{video_filename}",
-                    "video_filename": video_filename,
-                    "duration": result.get("duration", 0),
-                    "cost_estimate": result.get("cost_estimate", {}),
-                    "script": req.script,
+                saas_jobs[job_id]['result'] = {
+                    'video_url': _named_video_url(f'saas_{job_id}', video_filename),
+                    'script': req.script,
+                    'cost_estimate': result.get('cost_estimate', {}),
                 }
-                saas_jobs[job_id]["logs"].append("Video generation completed!")
-
-                # Upload to public gallery (non-blocking)
-                try:
-                    gallery_meta = {
-                        "title": req.script.get("title", "Untitled"),
-                        "hook_text": req.script.get("hook_text", ""),
-                        "caption": req.script.get("caption", ""),
-                        "hashtags": req.script.get("hashtags", []),
-                        "full_narration": req.script.get("full_narration", ""),
-                        "actor_description": req.script.get("actor_description", ""),
-                        "style": req.script.get("style", "ugc"),
-                        "language": req.script.get("language", "en"),
-                        "duration": result.get("duration", 0),
-                        "video_mode": req.video_mode,
-                        "product_name": req.script.get("_product_name", ""),
-                        "product_url": req.script.get("_product_url", ""),
-                        "segments": req.script.get("segments", []),
-                        "cost_estimate": result.get("cost_estimate", {}),
-                    }
-                    gallery_result = upload_video_to_gallery(
-                        video_path=result["video_path"],
-                        actor_image_path=result.get("actor_image", ""),
-                        metadata=gallery_meta,
-                        video_id=job_id[:8],
-                    )
-                    if gallery_result:
-                        saas_jobs[job_id]["result"]["gallery_video_id"] = gallery_result["video_id"]
-                        log_msg("📤 Uploaded to public gallery.")
-                except Exception as gallery_err:
-                    log_msg(f"⚠️ Gallery upload skipped: {gallery_err}")
-
         except Exception as e:
-            print(f"[SaaSShorts] ❌ Job {job_id} failed: {e}")
             if job_id in saas_jobs:
-                saas_jobs[job_id]["status"] = "failed"
-                saas_jobs[job_id]["logs"].append(f"Error: {str(e)}")
+                saas_jobs[job_id]['status'] = 'failed'
+                saas_jobs[job_id]['error'] = str(e)
+                saas_jobs[job_id]['logs'].append(f'Error: {e}')
         finally:
             concurrency_semaphore.release()
 
     asyncio.create_task(run_generation())
+    return {'job_id': job_id, 'status': 'processing', 'message': 'Video generation started'}
 
-    return {"job_id": job_id, "status": "processing"}
-
-
-@app.get("/api/saasshorts/status/{job_id}")
-async def saasshorts_status(job_id: str):
-    """Poll SaaSShorts job status."""
-    if job_id not in saas_jobs:
-        raise HTTPException(status_code=404, detail="SaaSShorts job not found")
-
-    job = saas_jobs[job_id]
+@app.get('/api/voices')
+async def get_voices():
     return {
-        "status": job["status"],
-        "logs": job["logs"],
-        "result": job.get("result"),
-    }
-
-
-@app.get("/api/saasshorts/voices")
-async def saasshorts_voices(
-    x_fishaudio_key: Optional[str] = Header(None, alias="X-FishAudio-Key"),
-):
-    """List available Fish Audio voices."""
-    if x_fishaudio_key:
-        try:
-            loop = asyncio.get_event_loop()
-            voices = await loop.run_in_executor(
-                None, get_fishaudio_voices, x_fishaudio_key
-            )
-            if voices:
-                return {"voices": voices, "source": "fishaudio"}
-        except Exception:
-            pass
-
-    # Fallback to default voices
-    return {
-        "voices": [
-            {"voice_id": vid, "name": name, "category": "default"}
+        'voices': [
+            {'voice_id': vid, 'name': name, 'category': 'default'}
             for name, vid in DEFAULT_VOICES.items()
         ],
-        "source": "defaults",
+        'source': 'defaults',
     }

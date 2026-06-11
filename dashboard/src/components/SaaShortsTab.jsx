@@ -34,7 +34,7 @@ function saveCache(url, analysis, webResearch, scripts) {
   } catch { /* localStorage full */ }
 }
 
-export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, hfToken, colabUrl, uploadPostKey, uploadUserId, f5TtsUrl, f5TtsRefText, f5TtsRefAudio }) {
+export default function SaaShortsTab({ geminiApiKey, hfToken, colabUrl, uploadPostKey, uploadUserId, f5TtsUrl, f5TtsRefText, f5TtsRefAudio, sdxlCloudUrl, brollCloudUrl, lipsyncCloudUrl }) {
   // Wizard state
   const [step, setStep] = useState(() => {
     const cache = loadCache();
@@ -173,7 +173,7 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, hfTok
   const fetchVoices = async () => {
     try {
       const res = await fetch(getApiUrl('/api/saasshorts/voices'), {
-        headers: { 'X-FishAudio-Key': fishAudioKey },
+        
       });
       if (res.ok) {
         const data = await res.json();
@@ -250,14 +250,11 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, hfTok
   };
 
   const handleGenerate = async () => {
-    if (!falKey && !hfToken && !colabUrl) {
+    if (!sdxlCloudUrl && !hfToken && !colabUrl) {
       alert('You need to configure either fal.ai Key, Hugging Face Token, or Colab URL in Settings.');
       return;
     }
-    if (!fishAudioKey) {
-      alert('Fish Audio API key required. Set it in Settings.');
-      return;
-    }
+    
 
     setGenerating(true);
     setGenLogs(['Starting video generation...']);
@@ -278,8 +275,8 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, hfTok
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Fal-Key': falKey || '',
-          'X-FishAudio-Key': fishAudioKey || '',
+          
+          
           'X-HF-Token': hfToken || '',
         },
         body: JSON.stringify({
@@ -329,8 +326,8 @@ export default function SaaShortsTab({ geminiApiKey, fishAudioKey, falKey, hfTok
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Fal-Key': falKey || '',
-          'X-FishAudio-Key': fishAudioKey || '',
+          
+          
           'X-HF-Token': hfToken || '',
         },
         body: JSON.stringify({
